@@ -480,6 +480,9 @@ ADMIN_HTML = """<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>管理后台 - IP位置检测</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔒</text></svg>">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
     <style>
         :root {
             --bg-primary: #0a0e27;
@@ -551,6 +554,29 @@ ADMIN_HTML = """<!DOCTYPE html>
         .btn-refresh:hover { background: rgba(105,240,174,0.3); }
         .btn-danger { background: rgba(255,82,82,0.15); color: var(--danger); border: 1px solid rgba(255,82,82,0.3); }
         .btn-danger:hover { background: rgba(255,82,82,0.3); }
+        .btn-export { background: rgba(24,255,255,0.15); color: var(--accent3); border: 1px solid rgba(24,255,255,0.3); }
+        .btn-export:hover { background: rgba(24,255,255,0.3); }
+        /* 地图和图表 */
+        .viz-grid {
+            display: grid; grid-template-columns: 1fr 1fr;
+            gap: 16px; margin-bottom: 24px;
+        }
+        .viz-card {
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 16px; padding: 16px; overflow: hidden;
+        }
+        .viz-card h3 {
+            font-size: 14px; color: var(--text-secondary); margin-bottom: 12px;
+            display: flex; align-items: center; gap: 6px;
+        }
+        .viz-card canvas { width: 100% !important; max-height: 250px; }
+        #adminMap { height: 300px; border-radius: 12px; }
+        .live-dot {
+            display: inline-block; width: 8px; height: 8px;
+            border-radius: 50%; background: var(--success);
+            animation: pulse 2s infinite;
+        }
+        .auto-refresh-label { font-size: 12px; color: var(--text-muted); margin-left: 4px; }
         /* 统计卡片 */
         .stats-grid {
             display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -645,6 +671,7 @@ ADMIN_HTML = """<!DOCTYPE html>
             .admin-wrap { padding: 12px; }
             .admin-header { flex-direction: column; gap: 12px; }
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .viz-grid { grid-template-columns: 1fr; }
             table { font-size: 11px; }
             th, td { padding: 8px 6px; }
             .ua-cell { max-width: 100px; }
@@ -666,10 +693,11 @@ ADMIN_HTML = """<!DOCTYPE html>
 <!-- 管理面板 -->
 <div class="admin-wrap" id="adminPanel" style="display:none">
     <div class="admin-header">
-        <h1>📊 访问记录管理</h1>
+        <h1>📊 访问记录管理 <span class="live-dot"></span> <span class="auto-refresh-label">自动刷新30s</span></h1>
         <div class="actions">
+            <button class="admin-btn btn-export" onclick="exportCSV()">📥 导出CSV</button>
             <button class="admin-btn btn-refresh" onclick="loadData()">🔄 刷新</button>
-            <button class="admin-btn btn-danger" onclick="confirmClear()">🗑️ 清空记录</button>
+            <button class="admin-btn btn-danger" onclick="confirmClear()">🗑️ 清空</button>
             <button class="admin-btn btn-logout" onclick="doLogout()">🚪 退出</button>
         </div>
     </div>
@@ -679,6 +707,30 @@ ADMIN_HTML = """<!DOCTYPE html>
         <div class="stat-card"><div class="stat-value" id="statToday">-</div><div class="stat-label">今日访问</div></div>
         <div class="stat-card"><div class="stat-value" id="statUnique">-</div><div class="stat-label">独立IP数</div></div>
         <div class="stat-card"><div class="stat-value" id="statCountries">-</div><div class="stat-label">国家/地区</div></div>
+        <div class="stat-card"><div class="stat-value" id="statRecent1h">-</div><div class="stat-label">最近1小时</div></div>
+        <div class="stat-card"><div class="stat-value" id="statTopISP">-</div><div class="stat-label">TOP ISP</div></div>
+    </div>
+
+    <!-- 可视化 -->
+    <div class="viz-grid">
+        <div class="viz-card">
+            <h3>🗺️ 访问者位置地图</h3>
+            <div id="adminMap"></div>
+        </div>
+        <div class="viz-card">
+            <h3>📈 最近7天访问趋势</h3>
+            <canvas id="trendChart"></canvas>
+        </div>
+    </div>
+    <div class="viz-grid">
+        <div class="viz-card">
+            <h3>🌍 国家分布 TOP5</h3>
+            <canvas id="countryChart"></canvas>
+        </div>
+        <div class="viz-card">
+            <h3>🌐 ISP分布 TOP5</h3>
+            <canvas id="ispChart"></canvas>
+        </div>
     </div>
 
     <div class="toolbar">
@@ -728,6 +780,12 @@ var filteredData = [];
 var currentPage = 1;
 var pageSize = 50;
 var cookieName = 'ip_detect_admin';
+var adminMap = null;
+var mapMarkers = [];
+var trendChart = null;
+var countryChart = null;
+var ispChart = null;
+var refreshTimer = null;
 
 function getCookie(n) {
     var m = document.cookie.match(new RegExp('(^| )' + n + '=([^;]+)'));
@@ -776,7 +834,11 @@ function doLogout() {
 function showAdmin() {
     document.getElementById('loginPage').style.display = 'none';
     document.getElementById('adminPanel').style.display = 'block';
+    initMap();
     loadData();
+    // 自动刷新30秒
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(loadData, 30000);
 }
 
 function loadData() {
@@ -793,6 +855,8 @@ function loadData() {
         buildCountryFilter();
         filterData();
         updateStats();
+        updateMap();
+        updateCharts();
     });
 }
 
@@ -803,12 +867,23 @@ function updateStats() {
     document.getElementById('statToday').textContent = todayCount;
     var ips = {};
     var countries = {};
+    var isps = {};
+    var now = Date.now();
+    var recent1h = 0;
     allData.forEach(function(v) {
-        ips[v.ip] = 1;
+        ips[v.ip] = (ips[v.ip]||0)+1;
         if (v.country_code) countries[v.country_code] = 1;
+        if (v.isp && v.isp !== '未知') isps[v.isp] = (isps[v.isp]||0)+1;
+        if (v.time) {
+            var t = new Date(v.time.replace(/-/g,'/')).getTime();
+            if (now - t < 3600000) recent1h++;
+        }
     });
     document.getElementById('statUnique').textContent = Object.keys(ips).length;
     document.getElementById('statCountries').textContent = Object.keys(countries).length;
+    document.getElementById('statRecent1h').textContent = recent1h;
+    var topISP = Object.entries(isps).sort(function(a,b){return b[1]-a[1]})[0];
+    document.getElementById('statTopISP').textContent = topISP ? topISP[0].substring(0,12) : '-';
 }
 
 function buildCountryFilter() {
@@ -923,6 +998,126 @@ function confirmClear() {
 function closeModal() {
     document.getElementById('clearModal').style.display = 'none';
 }
+function initMap() {
+    if (adminMap) return;
+    adminMap = L.map('adminMap', { zoomControl: true }).setView([30, 110], 2);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '©OpenStreetMap ©CARTO', maxZoom: 18
+    }).addTo(adminMap);
+}
+
+function updateMap() {
+    if (!adminMap) return;
+    mapMarkers.forEach(function(m){ adminMap.removeLayer(m); });
+    mapMarkers = [];
+    // 去重IP，每个IP只标一次
+    var seen = {};
+    allData.forEach(function(v) {
+        if (seen[v.ip]) return;
+        seen[v.ip] = 1;
+        var lat = parseFloat(v.latitude);
+        var lon = parseFloat(v.longitude);
+        if (isNaN(lat) || isNaN(lon)) return;
+        var flag = codeToFlag(v.country_code);
+        var popup = '<b>' + flag + ' ' + (v.city||'未知') + '</b><br>IP: ' + v.ip + '<br>ISP: ' + (v.isp||'未知');
+        var marker = L.circleMarker([lat, lon], {
+            radius: 6, fillColor: '#7c4dff', color: '#448aff',
+            weight: 1, opacity: 0.8, fillOpacity: 0.6
+        }).addTo(adminMap).bindPopup(popup);
+        mapMarkers.push(marker);
+    });
+    if (mapMarkers.length > 0) {
+        adminMap.fitBounds(mapMarkers.map(function(m){return m.getLatLng()}), {padding:[30,30], maxZoom:6});
+    }
+}
+
+function updateCharts() {
+    // 7天趋势
+    var days = {};
+    for (var i=6; i>=0; i--) {
+        var d = new Date(Date.now() - i*86400000);
+        days[d.toISOString().slice(0,10)] = 0;
+    }
+    allData.forEach(function(v) {
+        if (v.time) { var d = v.time.substring(0,10); if (d in days) days[d]++; }
+    });
+    var labels = Object.keys(days).map(function(d){return d.substring(5)});
+    var values = Object.values(days);
+    var ctx1 = document.getElementById('trendChart').getContext('2d');
+    if (trendChart) trendChart.destroy();
+    trendChart = new Chart(ctx1, {
+        type: 'line', data: {
+            labels: labels, datasets: [{
+                label: '访问量', data: values,
+                borderColor: '#7c4dff', backgroundColor: 'rgba(124,77,255,0.1)',
+                fill: true, tension: 0.4, pointBackgroundColor: '#18ffff', pointRadius: 4
+            }]
+        }, options: {
+            responsive: true, plugins: { legend: { display: false } },
+            scales: {
+                x: { ticks: { color: '#5c6bc0' }, grid: { color: 'rgba(124,77,255,0.08)' } },
+                y: { ticks: { color: '#5c6bc0', stepSize: 1 }, grid: { color: 'rgba(124,77,255,0.08)' }, beginAtZero: true }
+            }
+        }
+    });
+
+    // 国家TOP5饼图
+    var ccs = {};
+    allData.forEach(function(v) { if(v.country && v.country!=='未知') ccs[v.country]=(ccs[v.country]||0)+1; });
+    var cSorted = Object.entries(ccs).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
+    var ctx2 = document.getElementById('countryChart').getContext('2d');
+    if (countryChart) countryChart.destroy();
+    countryChart = new Chart(ctx2, {
+        type: 'doughnut', data: {
+            labels: cSorted.map(function(x){return x[0]}),
+            datasets: [{ data: cSorted.map(function(x){return x[1]}),
+                backgroundColor: ['#7c4dff','#448aff','#18ffff','#69f0ae','#ffd740'],
+                borderColor: '#111640', borderWidth: 2
+            }]
+        }, options: {
+            responsive: true, plugins: { legend: { position: 'bottom', labels: { color: '#9fa8da', font: {size:11} } } }
+        }
+    });
+
+    // ISP TOP5饼图
+    var isps = {};
+    allData.forEach(function(v) { if(v.isp && v.isp!=='未知') isps[v.isp]=(isps[v.isp]||0)+1; });
+    var iSorted = Object.entries(isps).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
+    var ctx3 = document.getElementById('ispChart').getContext('2d');
+    if (ispChart) ispChart.destroy();
+    ispChart = new Chart(ctx3, {
+        type: 'doughnut', data: {
+            labels: iSorted.map(function(x){return x[0].length>20?x[0].substring(0,18)+'..':x[0]}),
+            datasets: [{ data: iSorted.map(function(x){return x[1]}),
+                backgroundColor: ['#ff5252','#ff9100','#ffd740','#69f0ae','#18ffff'],
+                borderColor: '#111640', borderWidth: 2
+            }]
+        }, options: {
+            responsive: true, plugins: { legend: { position: 'bottom', labels: { color: '#9fa8da', font: {size:11} } } }
+        }
+    });
+}
+
+function exportCSV() {
+    var token = getCookie(cookieName);
+    fetch('/api/admin/visits', {
+        headers: {'Authorization': 'Bearer ' + token}
+    }).then(function(r){ return r.json(); }).then(function(d) {
+        var visits = d.visits || [];
+        if (!visits.length) { alert('无记录可导出'); return; }
+        var csv = '\uFEFFIP,国家,国家代码,城市,地区,纬度,经度,时区,ISP,AS,UA,来源,时间\n';
+        visits.forEach(function(v) {
+            csv += [v.ip,v.country,v.country_code,v.city,v.region,v.latitude,v.longitude,v.timezone,v.isp,v.asp||'',
+                '"'+(v.user_agent||'').replace(/"/g,'""')+'"',v.referer||'',v.time].join(',')+'\n';
+        });
+        var blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = 'ip_visits_'+new Date().toISOString().slice(0,10)+'.csv';
+        a.click(); URL.revokeObjectURL(url);
+    });
+}
+
 function doClear() {
     var token = getCookie(cookieName);
     fetch('/api/admin/clear', {
