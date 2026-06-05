@@ -1,0 +1,17 @@
+{
+  "type": "web_service",
+  "name": "ip-detector",
+  "ownerId": "tea-d82jdlrrjlhs73dips30",
+  "repo": "https://github.com/sg06231219-boop/ip-detector",
+  "branch": "master",
+  "serviceDetails": {
+    "env": "python",
+    "plan": "free",
+    "region": "oregon",
+    "envSpecificDetails": {
+      "pythonVersion": "3.12.11",
+      "buildCommand": "pip install -r requirements.txt",
+      "startCommand": "uvicorn app:app --host 0.0.0.0 --port $PORT"
+    }
+  }
+}
