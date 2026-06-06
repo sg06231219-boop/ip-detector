@@ -19,6 +19,10 @@ GITHUB_REPO = "sg06231219-boop/ip-detector"
 GITHUB_BRANCH = "data"
 VISITS_PATH = "data/visits.json"
 
+# 鍐欏叆鑺傛祦锛氱疮绉疦娆″彉鏇村悗鎵嶇湡姝ｆ帹閫佸埌GitHub锛岄伩鍏嶉绻乧ommit
+_pending_saves = 0
+_SAVE_THRESHOLD = 5  # 姣?娆¤闂墠鎺ㄩ€佷竴娆?_last_save_time = 0.0
+_SAVE_INTERVAL = 120  # 鑷冲皯闂撮殧120绉掓帹閫?
 # ========== IP浣嶇疆缂撳瓨锛堝唴瀛橈紝1灏忔椂TTL锛?==========
 _location_cache: Dict[str, Any] = {}
 _location_cache_ttl: Dict[str, float] = {}
@@ -84,14 +88,19 @@ def _load_visits() -> list:
     _visits_cache_time = now
     return visits
 
-def _save_visits(visits: list):
-    global _visits_cache, _visits_cache_time
+def _save_visits(visits: list, force: bool = False):
+    global _visits_cache, _visits_cache_time, _pending_saves, _last_save_time
     # 闄愬埗鏈€澶?000鏉?    if len(visits) > 2000:
         visits = visits[-2000:]
     _visits_cache = visits
     _visits_cache_time = time.time()
-    # 寮傛淇濆瓨鍒癎itHub锛堝悗鍙颁繚瀛橈紝涓嶉樆濉炲搷搴旓級
-    _github_save_visits(visits)
+    _pending_saves += 1
+    now = time.time()
+    # 鑺傛祦锛氱疮绉?娆″彉鏇存垨瓒呰繃120绉掓墠鎺ㄩ€侊紝绠＄悊鍛樻搷浣?force=True)绔嬪嵆鎺ㄩ€?    should_push = force or _pending_saves >= _SAVE_THRESHOLD or (now - _last_save_time) >= _SAVE_INTERVAL
+    if should_push:
+        _pending_saves = 0
+        _last_save_time = now
+        _github_save_visits(visits)
 
 def _record_visit(ip: str, location: dict, user_agent: str = "", referer: str = ""):
     """璁板綍璁块棶锛屽悓IP 5鍒嗛挓鍐呭幓閲?""
@@ -1130,7 +1139,7 @@ async def admin_delete_visit(ip: str, request: Request):
     for i in range(len(visits)-1, -1, -1):
         if visits[i].get("ip") == ip:
             visits.pop(i)
-            _save_visits(visits)
+            _save_visits(visits, force=True)
             return {"message": "宸插垹闄?, "ip": ip}
     raise HTTPException(status_code=404, detail="鏈壘鍒拌褰?)
 
@@ -1139,7 +1148,7 @@ async def admin_delete_visit(ip: str, request: Request):
 async def admin_clear_visits(request: Request):
     if not _verify_admin(request):
         raise HTTPException(status_code=401, detail="鏈巿鏉?)
-    _save_visits([])
+    _save_visits([], force=True)
     return {"message": "宸叉竻绌?}
 
 
