@@ -28,5 +28,20 @@
     "user_agent": "Mozilla/5.0 (Windows NT; Windows NT 10.0; zh-CN) WindowsPowerShell/5.1.26100.8457",
     "referer": "",
     "time": "2026-06-06 04:49:25"
+  },
+  {
+    "ip": "34.168.50.200",
+    "country": "美国",
+    "country_code": "US",
+    "city": "The Dalles",
+    "region": "俄勒冈州",
+    "latitude": 45.5945,
+    "longitude": -121.1786,
+    "timezone": "America/Los_Angeles",
+    "isp": "Google LLC",
+    "as": "AS396982 Google LLC",
+    "user_agent": "Go-http-client/2.0",
+    "referer": "",
+    "time": "2026-06-06 04:49:39"
   }
 ]
