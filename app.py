@@ -12,25 +12,26 @@ from typing import Optional, Dict, Any
 
 app = FastAPI()
 
-# ========== 閰嶇疆 ==========
+# ========== 配置 ==========
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Lys13579")
 GITHUB_PAT = os.environ.get("GITHUB_PAT", "")
 GITHUB_REPO = "sg06231219-boop/ip-detector"
 GITHUB_BRANCH = "data"
 VISITS_PATH = "data/visits.json"
-
-# 鍐欏叆鑺傛祦锛氱疮绉疦娆″彉鏇村悗鎵嶇湡姝ｆ帹閫佸埌GitHub锛岄伩鍏嶉绻乧ommit
+# Save throttle: batch changes before pushing to GitHub
 _pending_saves = 0
-_SAVE_THRESHOLD = 5  # 姣?娆¤闂墠鎺ㄩ€佷竴娆?_last_save_time = 0.0
-_SAVE_INTERVAL = 120  # 鑷冲皯闂撮殧120绉掓帹閫?
-# ========== IP浣嶇疆缂撳瓨锛堝唴瀛橈紝1灏忔椂TTL锛?==========
+_SAVE_THRESHOLD = 5
+_last_save_time = 0.0
+_SAVE_INTERVAL = 120
+
+# ========== IP位置缓存（内存，1小时TTL） ==========
 _location_cache: Dict[str, Any] = {}
 _location_cache_ttl: Dict[str, float] = {}
-LOCATION_CACHE_TTL = 3600  # 1灏忔椂
+LOCATION_CACHE_TTL = 3600  # 1小时
 
-# ========== 鏁版嵁瀛樺偍锛圙itHub Contents API 鎸佷箙鍖栵級 ==========
+# ========== 数据存储（GitHub Contents API 持久化） ==========
 def _github_get_visits() -> list:
-    """浠嶨itHub浠撳簱璇诲彇visits.json"""
+    """从GitHub仓库读取visits.json"""
     try:
         headers = {
             "Authorization": f"token {GITHUB_PAT}",
@@ -48,13 +49,13 @@ def _github_get_visits() -> list:
     return []
 
 def _github_save_visits(visits: list) -> bool:
-    """淇濆瓨visits.json鍒癎itHub浠撳簱"""
+    """保存visits.json到GitHub仓库"""
     try:
         headers = {
             "Authorization": f"token {GITHUB_PAT}",
             "Accept": "application/vnd.github.v3+json"
         }
-        # 鍏堣幏鍙栧綋鍓嶆枃浠秙ha
+        # 先获取当前文件sha
         url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{VISITS_PATH}?ref={GITHUB_BRANCH}"
         resp = httpx.get(url, headers=headers, timeout=10)
         sha = resp.json().get("sha") if resp.status_code == 200 else None
@@ -75,9 +76,11 @@ def _github_save_visits(visits: list) -> bool:
         pass
     return False
 
-# 鍐呭瓨缂撳瓨锛堥伩鍏嶆瘡娆¤姹傞兘璇籊itHub锛?_visits_cache: list = []
+# 内存缓存（避免每次请求都读GitHub）
+_visits_cache: list = []
 _visits_cache_time: float = 0
-_VISITS_CACHE_TTL = 30  # 30绉掔紦瀛?
+_VISITS_CACHE_TTL = 30  # 30秒缓存
+
 def _load_visits() -> list:
     global _visits_cache, _visits_cache_time
     now = time.time()
@@ -90,23 +93,24 @@ def _load_visits() -> list:
 
 def _save_visits(visits: list, force: bool = False):
     global _visits_cache, _visits_cache_time, _pending_saves, _last_save_time
-    # 闄愬埗鏈€澶?000鏉?    if len(visits) > 2000:
+    if len(visits) > 2000:
         visits = visits[-2000:]
     _visits_cache = visits
     _visits_cache_time = time.time()
     _pending_saves += 1
     now = time.time()
-    # 鑺傛祦锛氱疮绉?娆″彉鏇存垨瓒呰繃120绉掓墠鎺ㄩ€侊紝绠＄悊鍛樻搷浣?force=True)绔嬪嵆鎺ㄩ€?    should_push = force or _pending_saves >= _SAVE_THRESHOLD or (now - _last_save_time) >= _SAVE_INTERVAL
+    should_push = force or _pending_saves >= _SAVE_THRESHOLD or (now - _last_save_time) >= _SAVE_INTERVAL
     if should_push:
         _pending_saves = 0
         _last_save_time = now
         _github_save_visits(visits)
 
 def _record_visit(ip: str, location: dict, user_agent: str = "", referer: str = ""):
-    """璁板綍璁块棶锛屽悓IP 5鍒嗛挓鍐呭幓閲?""
+    """记录访问，同IP 5分钟内去重"""
     visits = _load_visits()
     now = datetime.now()
-    for v in reversed(visits[-50:]):  # 鍙鏌ユ渶杩?0鏉?        if v.get("ip") == ip:
+    for v in reversed(visits[-50:]):  # 只检查最近50条
+        if v.get("ip") == ip:
             try:
                 last_time = datetime.strptime(v["time"], "%Y-%m-%d %H:%M:%S")
                 if (now - last_time).total_seconds() < 300:
@@ -115,15 +119,15 @@ def _record_visit(ip: str, location: dict, user_agent: str = "", referer: str = 
                 pass
     visit = {
         "ip": ip,
-        "country": location.get("country", "鏈煡"),
+        "country": location.get("country", "未知"),
         "country_code": location.get("country_code", ""),
-        "city": location.get("city", "鏈煡"),
-        "region": location.get("region_name", "鏈煡"),
+        "city": location.get("city", "未知"),
+        "region": location.get("region_name", "未知"),
         "latitude": location.get("latitude"),
         "longitude": location.get("longitude"),
-        "timezone": location.get("timezone", "鏈煡"),
-        "isp": location.get("isp", "鏈煡"),
-        "as": location.get("as", "鏈煡"),
+        "timezone": location.get("timezone", "未知"),
+        "isp": location.get("isp", "未知"),
+        "as": location.get("as", "未知"),
         "user_agent": user_agent[:200] if user_agent else "",
         "referer": referer[:200] if referer else "",
         "time": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -133,7 +137,7 @@ def _record_visit(ip: str, location: dict, user_agent: str = "", referer: str = 
     return visit
 
 def _delete_visit(index: int):
-    """鍒犻櫎鎸囧畾绱㈠紩鐨勮闂褰?""
+    """删除指定索引的访问记录"""
     visits = _load_visits()
     if 0 <= index < len(visits):
         visits.pop(index)
@@ -148,7 +152,7 @@ def _get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "0.0.0.0"
 
 async def _fetch_location(ip: str) -> dict:
-    """鏌ヨIP鍦扮悊浣嶇疆锛堝甫鍐呭瓨缂撳瓨锛?""
+    """查询IP地理位置（带内存缓存）"""
     now = time.time()
     cache_key = f"loc_{ip}"
     if cache_key in _location_cache:
@@ -165,16 +169,16 @@ async def _fetch_location(ip: str) -> dict:
                 data = resp.json()
                 if data.get("status") == "success":
                     result = {
-                        "country": data.get("country", "鏈煡"),
-                        "country_code": data.get("countryCode", "鏈煡"),
-                        "city": data.get("city", "鏈煡"),
-                        "latitude": data.get("lat", "鏈煡"),
-                        "longitude": data.get("lon", "鏈煡"),
-                        "timezone": data.get("timezone", "鏈煡"),
-                        "isp": data.get("isp", "鏈煡"),
-                        "as": data.get("as", "鏈煡"),
-                        "region_name": data.get("regionName", "鏈煡"),
-                        "zip": data.get("zip", "鏈煡"),
+                        "country": data.get("country", "未知"),
+                        "country_code": data.get("countryCode", "未知"),
+                        "city": data.get("city", "未知"),
+                        "latitude": data.get("lat", "未知"),
+                        "longitude": data.get("lon", "未知"),
+                        "timezone": data.get("timezone", "未知"),
+                        "isp": data.get("isp", "未知"),
+                        "as": data.get("as", "未知"),
+                        "region_name": data.get("regionName", "未知"),
+                        "zip": data.get("zip", "未知"),
                     }
                     _location_cache[cache_key] = result
                     _location_cache_ttl[cache_key] = now
@@ -185,31 +189,31 @@ async def _fetch_location(ip: str) -> dict:
 
 def get_country_flag(code: str) -> str:
     if not code or len(code) != 2:
-        return "馃弫"
+        return "🏁"
     try:
         offset = 127397
         return chr(ord(code[0].upper()) + offset) + chr(ord(code[1].upper()) + offset)
     except Exception:
-        return "馃弫"
+        return "🏁"
 
 
-# ========== 鍓嶅彴椤甸潰妯℃澘 ==========
+# ========== 前台页面模板 ==========
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IP浣嶇疆妫€娴?- 鏅鸿兘瀹氫綅宸ュ叿</title>
-    <meta name="description" content="涓€閿娴嬫偍鐨処P鍦板潃銆佸湴鐞嗕綅缃€両SP淇℃伅銆傚厤璐广€佸揩閫熴€佺簿鍑嗙殑IP瀹氫綅宸ュ叿銆?>
-    <meta name="keywords" content="IP瀹氫綅,IP鏌ヨ,IP鍦板潃鏌ヨ,鍦扮悊浣嶇疆,IP妫€娴?>
-    <meta property="og:title" content="IP浣嶇疆妫€娴?- 鏅鸿兘瀹氫綅宸ュ叿">
-    <meta property="og:description" content="涓€閿娴嬫偍鐨処P鍦板潃銆佸湴鐞嗕綅缃€両SP淇℃伅锛屽厤璐逛娇鐢?>
+    <title>IP位置检测 - 智能定位工具</title>
+    <meta name="description" content="一键检测您的IP地址、地理位置、ISP信息。免费、快速、精准的IP定位工具。">
+    <meta name="keywords" content="IP定位,IP查询,IP地址查询,地理位置,IP检测">
+    <meta property="og:title" content="IP位置检测 - 智能定位工具">
+    <meta property="og:description" content="一键检测您的IP地址、地理位置、ISP信息，免费使用">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://ip-detector-lu2p.onrender.com">
     <meta name="twitter:card" content="summary">
     <meta name="theme-color" content="#0a0e27">
     <link rel="manifest" href="/manifest.json">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>馃實</text></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌍</text></svg>">
     <style>
         :root {
             --bg-primary: #0a0e27;
@@ -433,93 +437,93 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <canvas id="particles"></canvas>
     <div class="wrapper">
         <div class="topbar">
-            <button onclick="toggleTheme()" id="themeBtn">馃寵</button>
-            <button onclick="sharePage()">馃敆 鍒嗕韩</button>
+            <button onclick="toggleTheme()" id="themeBtn">🌙</button>
+            <button onclick="sharePage()">🔗 分享</button>
         </div>
         <div class="header">
-            <h1>馃實 IP 鏅鸿兘瀹氫綅</h1>
-            <p>瀹炴椂妫€娴嬫偍鐨勭綉缁滆韩浠戒笌鍦扮悊浣嶇疆</p>
-            <div class="social-proof">宸叉湁 <span id="totalUsers">-</span> 浜轰娇鐢?/div>
+            <h1>🌍 IP 智能定位</h1>
+            <p>实时检测您的网络身份与地理位置</p>
+            <div class="social-proof">已有 <span id="totalUsers">-</span> 人使用</div>
             <div class="status-badge">
                 <span class="status-dot"></span>
-                妫€娴嬪畬鎴?路 __TIMESTAMP__
+                检测完成 · __TIMESTAMP__
             </div>
         </div>
         <div class="query-section">
             <div class="query-box">
-                <input type="text" id="queryInput" placeholder="杈撳叆浠绘剰IP鍦板潃鏌ヨ浣嶇疆锛屼緥濡傦細8.8.8.8" onkeydown="if(event.key==='Enter')queryIP()">
-                <button onclick="queryIP()" id="queryBtn">馃攳 鏌ヨIP</button>
+                <input type="text" id="queryInput" placeholder="输入任意IP地址查询位置，例如：8.8.8.8" onkeydown="if(event.key==='Enter')queryIP()">
+                <button onclick="queryIP()" id="queryBtn">🔍 查询IP</button>
             </div>
             <div id="queryResult"></div>
         </div>
         <div class="ip-hero">
-            <div class="ip-label">鎮ㄧ殑鍏綉 IP 鍦板潃</div>
-            <div class="ip-value" onclick="copyIP()" title="鐐瑰嚮澶嶅埗">__IP__</div>
-            <div class="copy-hint">鐐瑰嚮IP鍗冲彲澶嶅埗</div>
+            <div class="ip-label">您的公网 IP 地址</div>
+            <div class="ip-value" onclick="copyIP()" title="点击复制">__IP__</div>
+            <div class="copy-hint">点击IP即可复制</div>
         </div>
         <div class="info-grid" id="infoGrid">
             <div class="info-card card-location">
-                <div class="card-header"><div class="card-icon">馃彸锔?/div><div class="card-title">鍥藉/鍦板尯</div></div>
+                <div class="card-header"><div class="card-icon">🏳️</div><div class="card-title">国家/地区</div></div>
                 <div class="card-value">__COUNTRY_FLAG__ __COUNTRY__</div>
-                <div class="card-sub">浠ｇ爜: __COUNTRY_CODE__</div>
+                <div class="card-sub">代码: __COUNTRY_CODE__</div>
             </div>
             <div class="info-card card-city">
-                <div class="card-header"><div class="card-icon">馃彊锔?/div><div class="card-title">鍩庡競</div></div>
+                <div class="card-header"><div class="card-icon">🏙️</div><div class="card-title">城市</div></div>
                 <div class="card-value">__CITY__</div>
-                <div class="card-sub">鍦板尯: __REGION__</div>
+                <div class="card-sub">地区: __REGION__</div>
             </div>
             <div class="info-card card-coords">
-                <div class="card-header"><div class="card-icon">馃椇锔?/div><div class="card-title">缁忕含搴?/div></div>
+                <div class="card-header"><div class="card-icon">🗺️</div><div class="card-title">经纬度</div></div>
                 <div class="card-value">__LAT__, __LON__</div>
-                <div class="card-sub">WGS84鍧愭爣绯?/div>
+                <div class="card-sub">WGS84坐标系</div>
             </div>
             <div class="info-card card-timezone">
-                <div class="card-header"><div class="card-icon">鈴?/div><div class="card-title">鏃跺尯</div></div>
+                <div class="card-header"><div class="card-icon">⏰</div><div class="card-title">时区</div></div>
                 <div class="card-value">__TIMEZONE__</div>
-                <div class="card-sub" id="localTime">鏈湴鏃堕棿: 鍔犺浇涓?..</div>
+                <div class="card-sub" id="localTime">本地时间: 加载中...</div>
             </div>
             <div class="info-card card-isp">
-                <div class="card-header"><div class="card-icon">馃寪</div><div class="card-title">ISP 杩愯惀鍟?/div></div>
+                <div class="card-header"><div class="card-icon">🌐</div><div class="card-title">ISP 运营商</div></div>
                 <div class="card-value">__ISP__</div>
-                <div class="card-sub">浜掕仈缃戞湇鍔℃彁渚涘晢</div>
+                <div class="card-sub">互联网服务提供商</div>
             </div>
             <div class="info-card card-as">
-                <div class="card-header"><div class="card-icon">馃敆</div><div class="card-title">AS 缂栧彿</div></div>
+                <div class="card-header"><div class="card-icon">🔗</div><div class="card-title">AS 编号</div></div>
                 <div class="card-value" style="font-size:16px;">__AS__</div>
-                <div class="card-sub">鑷不绯荤粺缂栧彿</div>
+                <div class="card-sub">自治系统编号</div>
             </div>
             <div class="info-card card-region">
-                <div class="card-header"><div class="card-icon">馃搷</div><div class="card-title">绮剧‘鍖哄煙</div></div>
+                <div class="card-header"><div class="card-icon">📍</div><div class="card-title">精确区域</div></div>
                 <div class="card-value" style="font-size:16px;">__REGION_NAME__</div>
-                <div class="card-sub">閭紪: __ZIP__</div>
+                <div class="card-sub">邮编: __ZIP__</div>
             </div>
             <div class="info-card card-browser">
-                <div class="card-header"><div class="card-icon">馃枼锔?/div><div class="card-title">鎮ㄧ殑娴忚鍣?/div></div>
-                <div class="card-value" style="font-size:14px;" id="browserInfo">妫€娴嬩腑...</div>
+                <div class="card-header"><div class="card-icon">🖥️</div><div class="card-title">您的浏览器</div></div>
+                <div class="card-value" style="font-size:14px;" id="browserInfo">检测中...</div>
                 <div class="card-sub" id="screenInfo"></div>
             </div>
         </div>
         <div class="map-section">
-            <h3>馃搷 鍦扮悊浣嶇疆鍙鍖?/h3>
+            <h3>📍 地理位置可视化</h3>
             <div class="map-container">
                 <iframe id="mapFrame" src="https://www.openstreetmap.org/export/embed.html?bbox=__MAP_BBOX__&layer=mapnik&marker=__LAT__,__LON__" loading="lazy"></iframe>
             </div>
         </div>
         <div class="actions">
-            <a href="https://www.google.com/maps?q=__LAT__,__LON__" target="_blank" class="btn btn-primary">馃椇锔?Google鍦板浘鏌ョ湅</a>
-            <button class="btn btn-secondary" onclick="copyAll()">馃搵 澶嶅埗鍏ㄩ儴淇℃伅</button>
-            <button class="btn btn-success" onclick="copyIP()">馃搶 澶嶅埗IP鍦板潃</button>
+            <a href="https://www.google.com/maps?q=__LAT__,__LON__" target="_blank" class="btn btn-primary">🗺️ Google地图查看</a>
+            <button class="btn btn-secondary" onclick="copyAll()">📋 复制全部信息</button>
+            <button class="btn btn-success" onclick="copyIP()">📌 复制IP地址</button>
         </div>
         <div class="json-section">
             <button class="json-toggle" onclick="toggleJSON(this)">
-                <span class="arrow">鈻?/span> 鏌ョ湅 JSON 鍘熷鏁版嵁
+                <span class="arrow">▶</span> 查看 JSON 原始数据
             </button>
             <div class="json-content" id="jsonContent">__JSON_DATA__</div>
         </div>
         <div class="footer">
-            IP鏅鸿兘瀹氫綅宸ュ叿 路 鏁版嵁鏉ユ簮 ip-api.com 路 妫€娴嬫椂闂?__TIMESTAMP__<br>
-            <span style="opacity:0.5;">浣嶇疆涓哄ぇ鑷翠及绠楋紝涓嶄唬琛ㄧ簿纭綇鍧€</span><br>
-            <a href="/admin" style="color:var(--text-muted);font-size:11px;margin-top:4px;display:inline-block">馃敀 绠＄悊鍚庡彴</a>
+            IP智能定位工具 · 数据来源 ip-api.com · 检测时间 __TIMESTAMP__<br>
+            <span style="opacity:0.5;">位置为大致估算，不代表精确住址</span><br>
+            <a href="/admin" style="color:var(--text-muted);font-size:11px;margin-top:4px;display:inline-block">🔒 管理后台</a>
         </div>
     </div>
     <div class="toast" id="toast"></div>
@@ -527,24 +531,24 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     (function(){
         var saved = localStorage.getItem('ip-theme') || 'dark';
         document.documentElement.setAttribute('data-theme', saved);
-        document.getElementById('themeBtn').textContent = saved === 'dark' ? '鈽€锔? : '馃寵';
+        document.getElementById('themeBtn').textContent = saved === 'dark' ? '☀️' : '🌙';
     })();
     function toggleTheme() {
         var cur = document.documentElement.getAttribute('data-theme') || 'dark';
         var next = cur === 'dark' ? 'light' : 'dark';
         document.documentElement.setAttribute('data-theme', next);
         localStorage.setItem('ip-theme', next);
-        document.getElementById('themeBtn').textContent = next === 'dark' ? '鈽€锔? : '馃寵';
+        document.getElementById('themeBtn').textContent = next === 'dark' ? '☀️' : '🌙';
     }
     function sharePage() {
         var url = location.href;
         if (navigator.share) {
-            navigator.share({ title: 'IP鏅鸿兘瀹氫綅', text: '鎴戠殑IP: __IP__', url: url }).catch(function(){});
+            navigator.share({ title: 'IP智能定位', text: '我的IP: __IP__', url: url }).catch(function(){});
         } else {
-            navigator.clipboard.writeText(url).then(function(){ showToast('鉁?閾炬帴宸插鍒?); });
+            navigator.clipboard.writeText(url).then(function(){ showToast('✅ 链接已复制'); });
         }
     }
-    // 绀句細璇佹槑 - 鍔犺浇浣跨敤浜烘暟
+    // 社会证明 - 加载使用人数
     fetch('/api/stats').then(function(r){return r.json()}).then(function(d){
         document.getElementById('totalUsers').textContent = d.total || 0;
     }).catch(function(){});
@@ -554,16 +558,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         var input = document.getElementById('queryInput');
         var btn = document.getElementById('queryBtn');
         var ip = input.value.trim();
-        if (!ip) { showToast('鈿狅笍 璇疯緭鍏P鍦板潃'); return; }
+        if (!ip) { showToast('⚠️ 请输入IP地址'); return; }
         var ipRe = /^(\d{1,3}\.){3}\d{1,3}$/;
-        if (!ipRe.test(ip)) { showToast('鈿狅笍 IP鏍煎紡涓嶆纭?); return; }
-        btn.disabled = true; btn.textContent = '鏌ヨ涓?..';
+        if (!ipRe.test(ip)) { showToast('⚠️ IP格式不正确'); return; }
+        btn.disabled = true; btn.textContent = '查询中...';
         var isDark = document.documentElement.getAttribute('data-theme') !== 'light';
         fetch('/api/query?ip=' + encodeURIComponent(ip))
             .then(function(r){ return r.json(); })
             .then(function(d){
-                btn.disabled = false; btn.textContent = '馃攳 鏌ヨIP';
-                if (d.error) { showToast('鉂?' + d.error); return; }
+                btn.disabled = false; btn.textContent = '🔍 查询IP';
+                if (d.error) { showToast('❌ ' + d.error); return; }
                 var l = d.location || {};
                 var flag = codeToFlag(l.country_code || '');
                 var lat = l.latitude || 0, lon = l.longitude || 0;
@@ -573,27 +577,27 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 var mapFilter = isDark ? 'invert(0.9) hue-rotate(180deg) brightness(0.9) contrast(1.1)' : 'none';
                 var html = '<div class="query-result" style="margin-top:20px">' +
                     '<div class="ip-hero" style="margin:16px 0 20px">' +
-                    '<div class="ip-label">鏌ヨ缁撴灉</div>' +
-                    '<div class="ip-value" onclick="navigator.clipboard.writeText(\\''+ip+'\\').then(function(){showToast(\\'鉁?IP宸插鍒禱\')})">' + ip + '</div>' +
+                    '<div class="ip-label">查询结果</div>' +
+                    '<div class="ip-value" onclick="navigator.clipboard.writeText(\\''+ip+'\\').then(function(){showToast(\\'✅ IP已复制\\')})">' + ip + '</div>' +
                     '</div>' +
                     '<div class="info-grid">' +
-                    cardHTML('馃彸锔?,'鍥藉/鍦板尯', flag + ' ' + (l.country||'鏈煡'), '浠ｇ爜: ' + (l.country_code||'-')) +
-                    cardHTML('馃彊锔?,'鍩庡競', (l.city||'鏈煡'), '鍦板尯: ' + (l.region_name||'鏈煡')) +
-                    cardHTML('馃椇锔?,'缁忕含搴?, lat + ', ' + lon, 'WGS84鍧愭爣绯?) +
-                    cardHTML('鈴?,'鏃跺尯', (l.timezone||'鏈煡'), '') +
-                    cardHTML('馃寪','ISP', (l.isp||'鏈煡'), '') +
-                    cardHTML('馃敆','AS缂栧彿', (l.as||'-'), '') +
-                    cardHTML('馃搷','閭紪', (l.zip||'-'), '') +
+                    cardHTML('🏳️','国家/地区', flag + ' ' + (l.country||'未知'), '代码: ' + (l.country_code||'-')) +
+                    cardHTML('🏙️','城市', (l.city||'未知'), '地区: ' + (l.region_name||'未知')) +
+                    cardHTML('🗺️','经纬度', lat + ', ' + lon, 'WGS84坐标系') +
+                    cardHTML('⏰','时区', (l.timezone||'未知'), '') +
+                    cardHTML('🌐','ISP', (l.isp||'未知'), '') +
+                    cardHTML('🔗','AS编号', (l.as||'-'), '') +
+                    cardHTML('📍','邮编', (l.zip||'-'), '') +
                     '</div>' +
-                    '<div class="map-section"><h3>馃搷 浣嶇疆鍙鍖?/h3>' +
+                    '<div class="map-section"><h3>📍 位置可视化</h3>' +
                     '<div class="map-container"><iframe src="'+mapUrl+'" style="width:100%;height:100%;border:none;filter:'+mapFilter+'" loading="lazy"></iframe></div></div>' +
                     '<div class="actions">' +
-                    '<a href="https://www.google.com/maps?q='+lat+','+lon+'" target="_blank" class="btn btn-primary">馃椇锔?Google鍦板浘</a>' +
-                    '<button class="btn btn-success" onclick="navigator.clipboard.writeText(\\''+ip+'\\').then(function(){showToast(\\'鉁?IP宸插鍒禱\')})">馃搶 澶嶅埗IP</button>' +
+                    '<a href="https://www.google.com/maps?q='+lat+','+lon+'" target="_blank" class="btn btn-primary">🗺️ Google地图</a>' +
+                    '<button class="btn btn-success" onclick="navigator.clipboard.writeText(\\''+ip+'\\').then(function(){showToast(\\'✅ IP已复制\\')})">📌 复制IP</button>' +
                     '</div></div>';
                 document.getElementById('queryResult').innerHTML = html;
             })
-            .catch(function(err){ btn.disabled=false; btn.textContent='馃攳 鏌ヨIP'; showToast('鉂?鏌ヨ澶辫触'); });
+            .catch(function(err){ btn.disabled=false; btn.textContent='🔍 查询IP'; showToast('❌ 查询失败'); });
     }
     function cardHTML(icon, title, value, sub) {
         return '<div class="info-card"><div class="card-header"><div class="card-icon">'+icon+'</div><div class="card-title">'+title+'</div></div><div class="card-value">'+value+'</div>'+(sub?'<div class="card-sub">'+sub+'</div>':'')+'</div>';
@@ -606,28 +610,28 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         function draw(){ctx.clearRect(0,0,c.width,c.height);for(var i=0;i<ps.length;i++){var p=ps[i];p.x+=p.vx;p.y+=p.vy;if(p.x<0)p.x=c.width;if(p.x>c.width)p.x=0;if(p.y<0)p.y=c.height;if(p.y>c.height)p.y=0;ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fillStyle='rgba(124,77,255,'+p.o+')';ctx.fill();for(var j=i+1;j<ps.length;j++){var q=ps[j],dx=p.x-q.x,dy=p.y-q.y,d2=Math.sqrt(dx*dx+dy*dy);if(d2<120){ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(q.x,q.y);ctx.strokeStyle='rgba(124,77,255,'+(0.08*(1-d2/120))+')';ctx.stroke()}}}requestAnimationFrame(draw)}draw();
     })();
     (function(){
-        var ua=navigator.userAgent,b='鏈煡';
+        var ua=navigator.userAgent,b='未知';
         if(ua.indexOf('Edg')>-1)b='Microsoft Edge';
         else if(ua.indexOf('Chrome')>-1)b='Google Chrome';
         else if(ua.indexOf('Firefox')>-1)b='Mozilla Firefox';
         else if(ua.indexOf('Safari')>-1&&ua.indexOf('Chrome')===-1)b='Apple Safari';
         else if(ua.indexOf('Opera')>-1)b='Opera';
         document.getElementById('browserInfo').textContent=b;
-        document.getElementById('screenInfo').textContent=screen.width+'x'+screen.height+' 路 '+(navigator.language||'鏈煡');
+        document.getElementById('screenInfo').textContent=screen.width+'x'+screen.height+' · '+(navigator.language||'未知');
     })();
     (function(){
-        try{var tz='__TIMEZONE__';if(tz&&tz!=='鏈煡'){var now=new Date();var opts={timeZone:tz,hour12:false,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'};document.getElementById('localTime').textContent='鏈湴鏃堕棿: '+now.toLocaleString('zh-CN',opts)}}catch(e){}
+        try{var tz='__TIMEZONE__';if(tz&&tz!=='未知'){var now=new Date();var opts={timeZone:tz,hour12:false,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'};document.getElementById('localTime').textContent='本地时间: '+now.toLocaleString('zh-CN',opts)}}catch(e){}
     })();
     function codeToFlag(code) {
-        if (!code || code.length !== 2) return '馃弫';
+        if (!code || code.length !== 2) return '🏁';
         var offset = 127397;
         return String.fromCodePoint(code.charCodeAt(0)+offset)+String.fromCodePoint(code.charCodeAt(1)+offset);
     }
-    function copyIP(){navigator.clipboard.writeText('__IP__').then(function(){showToast('鉁?IP鍦板潃宸插鍒?)})}
+    function copyIP(){navigator.clipboard.writeText('__IP__').then(function(){showToast('✅ IP地址已复制')})}
     function copyAll(){
-        var data=__JSON_RAW__,t='IP鍦板潃: '+data.ip+'\\n';
-        if(data.location){var l=data.location;t+='鍥藉: '+l.country+' ('+l.country_code+')\\n';t+='鍩庡競: '+l.city+'\\n';t+='鍦板尯: '+(l.region_name||'鏈煡')+'\\n';t+='缁忕含搴? '+l.latitude+', '+l.longitude+'\\n';t+='鏃跺尯: '+l.timezone+'\\n';t+='ISP: '+l.isp+'\\n';t+='AS: '+(l.as||'鏈煡')+'\\n'}
-        navigator.clipboard.writeText(t).then(function(){showToast('鉁?鍏ㄩ儴淇℃伅宸插鍒?)})
+        var data=__JSON_RAW__,t='IP地址: '+data.ip+'\\n';
+        if(data.location){var l=data.location;t+='国家: '+l.country+' ('+l.country_code+')\\n';t+='城市: '+l.city+'\\n';t+='地区: '+(l.region_name||'未知')+'\\n';t+='经纬度: '+l.latitude+', '+l.longitude+'\\n';t+='时区: '+l.timezone+'\\n';t+='ISP: '+l.isp+'\\n';t+='AS: '+(l.as||'未知')+'\\n'}
+        navigator.clipboard.writeText(t).then(function(){showToast('✅ 全部信息已复制')})
     }
     function showToast(m){var t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},2000)}
     function toggleJSON(b){b.classList.toggle('open');document.getElementById('jsonContent').classList.toggle('show')}
@@ -636,14 +640,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </html>"""
 
 
-# ========== 绠＄悊鍛樺悗鍙版ā鏉?==========
+# ========== 管理员后台模板 ==========
 ADMIN_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>绠＄悊鍚庡彴 - IP浣嶇疆妫€娴?/title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>馃敀</text></svg>">
+    <title>管理后台 - IP位置检测</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔒</text></svg>">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
@@ -742,49 +746,49 @@ ADMIN_HTML = """<!DOCTYPE html>
 <body>
 <div class="login-wrap" id="loginPage">
     <div class="login-box">
-        <h2>馃敀 绠＄悊鍚庡彴</h2>
-        <p>IP浣嶇疆妫€娴嬪伐鍏?路 绠＄悊鍛樼櫥褰?/p>
-        <input type="password" id="pwdInput" placeholder="璇疯緭鍏ョ鐞嗗憳瀵嗙爜" onkeydown="if(event.key==='Enter')doLogin()">
-        <button onclick="doLogin()">鐧?褰?/button>
-        <div class="login-error" id="loginError">瀵嗙爜閿欒锛岃閲嶈瘯</div>
+        <h2>🔒 管理后台</h2>
+        <p>IP位置检测工具 · 管理员登录</p>
+        <input type="password" id="pwdInput" placeholder="请输入管理员密码" onkeydown="if(event.key==='Enter')doLogin()">
+        <button onclick="doLogin()">登 录</button>
+        <div class="login-error" id="loginError">密码错误，请重试</div>
     </div>
 </div>
 <div class="admin-wrap" id="adminPanel" style="display:none">
     <div class="admin-header">
-        <h1>馃搳 璁块棶璁板綍 <span class="live-dot"></span></h1>
+        <h1>📊 访问记录 <span class="live-dot"></span></h1>
         <div class="actions">
-            <button class="admin-btn btn-export" onclick="exportCSV()">馃摜 CSV</button>
-            <button class="admin-btn btn-refresh" onclick="loadData()">馃攧</button>
-            <button class="admin-btn btn-danger" onclick="showConfirm()">馃棏锔?/button>
-            <button class="admin-btn btn-logout" onclick="doLogout()">馃毆</button>
+            <button class="admin-btn btn-export" onclick="exportCSV()">📥 CSV</button>
+            <button class="admin-btn btn-refresh" onclick="loadData()">🔄</button>
+            <button class="admin-btn btn-danger" onclick="showConfirm()">🗑️</button>
+            <button class="admin-btn btn-logout" onclick="doLogout()">🚪</button>
         </div>
     </div>
     <div class="stats-grid" id="statsGrid">
-        <div class="stat-card"><div class="stat-value" id="sTotal">-</div><div class="stat-label">鎬昏闂?/div></div>
-        <div class="stat-card"><div class="stat-value" id="sToday">-</div><div class="stat-label">浠婃棩</div></div>
-        <div class="stat-card"><div class="stat-value" id="sUnique">-</div><div class="stat-label">鐙珛IP</div></div>
-        <div class="stat-card"><div class="stat-value" id="sCountries">-</div><div class="stat-label">鍥藉</div></div>
-        <div class="stat-card"><div class="stat-value" id="sRecent">-</div><div class="stat-label">杩?灏忔椂</div></div>
+        <div class="stat-card"><div class="stat-value" id="sTotal">-</div><div class="stat-label">总访问</div></div>
+        <div class="stat-card"><div class="stat-value" id="sToday">-</div><div class="stat-label">今日</div></div>
+        <div class="stat-card"><div class="stat-value" id="sUnique">-</div><div class="stat-label">独立IP</div></div>
+        <div class="stat-card"><div class="stat-value" id="sCountries">-</div><div class="stat-label">国家</div></div>
+        <div class="stat-card"><div class="stat-value" id="sRecent">-</div><div class="stat-label">近1小时</div></div>
         <div class="stat-card"><div class="stat-value" id="sTopISP">-</div><div class="stat-label">TOP ISP</div></div>
     </div>
     <div class="viz-grid">
-        <div class="viz-card"><h3>馃椇锔?璁块棶鑰呬綅缃?/h3><div id="adminMap"></div></div>
-        <div class="viz-card"><h3>馃搱 7澶╄秼鍔?/h3><canvas id="trendChart"></canvas></div>
+        <div class="viz-card"><h3>🗺️ 访问者位置</h3><div id="adminMap"></div></div>
+        <div class="viz-card"><h3>📈 7天趋势</h3><canvas id="trendChart"></canvas></div>
     </div>
     <div class="viz-grid">
-        <div class="viz-card"><h3>馃實 鍥藉 TOP5</h3><canvas id="countryChart"></canvas></div>
-        <div class="viz-card"><h3>馃寪 ISP TOP5</h3><canvas id="ispChart"></canvas></div>
+        <div class="viz-card"><h3>🌍 国家 TOP5</h3><canvas id="countryChart"></canvas></div>
+        <div class="viz-card"><h3>🌐 ISP TOP5</h3><canvas id="ispChart"></canvas></div>
     </div>
     <div class="toolbar">
-        <input type="text" id="searchInput" placeholder="馃攳 鎼滅储IP/鍩庡競/ISP..." oninput="filterData()">
-        <select id="countryFilter" onchange="filterData()"><option value="">鍏ㄩ儴鍥藉</option></select>
-        <select id="ispFilter" onchange="filterData()"><option value="">鍏ㄩ儴ISP</option></select>
+        <input type="text" id="searchInput" placeholder="🔍 搜索IP/城市/ISP..." oninput="filterData()">
+        <select id="countryFilter" onchange="filterData()"><option value="">全部国家</option></select>
+        <select id="ispFilter" onchange="filterData()"><option value="">全部ISP</option></select>
     </div>
     <div class="table-wrap">
         <table>
             <thead><tr>
-                <th>#</th><th>IP鍦板潃</th><th>馃彸锔?/th><th>鍥藉</th><th>鍩庡競</th>
-                <th>ISP</th><th>娴忚鍣?/th><th>鏃堕棿</th><th>鎿嶄綔</th>
+                <th>#</th><th>IP地址</th><th>🏳️</th><th>国家</th><th>城市</th>
+                <th>ISP</th><th>浏览器</th><th>时间</th><th>操作</th>
             </tr></thead>
             <tbody id="tableBody"></tbody>
         </table>
@@ -793,29 +797,29 @@ ADMIN_HTML = """<!DOCTYPE html>
 </div>
 <div class="modal-overlay" id="detailModal" style="display:none" onclick="if(event.target===this)closeDetail()">
     <div class="modal-box">
-        <button class="modal-close" onclick="closeDetail()">脳</button>
-        <h3 id="detailTitle">IP 璇︽儏</h3>
+        <button class="modal-close" onclick="closeDetail()">×</button>
+        <h3 id="detailTitle">IP 详情</h3>
         <div class="modal-info" id="detailInfo"></div>
         <div class="modal-map" id="detailMap"></div>
     </div>
 </div>
 <div class="confirm-modal" id="confirmModal" style="display:none" onclick="if(event.target===this)closeConfirm()">
     <div class="confirm-box">
-        <h3>鈿狅笍 纭娓呯┖</h3>
-        <p>姝ゆ搷浣滃皢鍒犻櫎鎵€鏈夎闂褰曪紝涓嶅彲鎭㈠锛?/p>
+        <h3>⚠️ 确认清空</h3>
+        <p>此操作将删除所有访问记录，不可恢复！</p>
         <div class="btns">
-            <button style="background:var(--bg-card);color:var(--text-primary)" onclick="closeConfirm()">鍙栨秷</button>
-            <button style="background:var(--danger);color:white" onclick="doClear()">纭娓呯┖</button>
+            <button style="background:var(--bg-card);color:var(--text-primary)" onclick="closeConfirm()">取消</button>
+            <button style="background:var(--danger);color:white" onclick="doClear()">确认清空</button>
         </div>
     </div>
 </div>
 <div class="confirm-modal" id="delConfirmModal" style="display:none" onclick="if(event.target===this)closeDelConfirm()">
     <div class="confirm-box">
-        <h3>鈿狅笍 纭鍒犻櫎</h3>
-        <p id="delConfirmText">纭鍒犻櫎杩欐潯璁板綍锛?/p>
+        <h3>⚠️ 确认删除</h3>
+        <p id="delConfirmText">确认删除这条记录？</p>
         <div class="btns">
-            <button style="background:var(--bg-card);color:var(--text-primary)" onclick="closeDelConfirm()">鍙栨秷</button>
-            <button style="background:var(--danger);color:white" onclick="doDelete()">纭鍒犻櫎</button>
+            <button style="background:var(--bg-card);color:var(--text-primary)" onclick="closeDelConfirm()">取消</button>
+            <button style="background:var(--danger);color:white" onclick="doDelete()">确认删除</button>
         </div>
     </div>
 </div>
@@ -840,7 +844,7 @@ function doLogout(){delCookie(cookieName);document.getElementById('adminPanel').
 
 function showAdmin(){document.getElementById('loginPage').style.display='none';document.getElementById('adminPanel').style.display='block';initMap();loadData();if(refreshTimer)clearInterval(refreshTimer);refreshTimer=setInterval(loadData,30000);}
 
-function initMap(){if(adminMap)return;adminMap=L.map('adminMap',{zoomControl:true}).setView([30,110],2);L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'漏OSM 漏CARTO',maxZoom:18}).addTo(adminMap);}
+function initMap(){if(adminMap)return;adminMap=L.map('adminMap',{zoomControl:true}).setView([30,110],2);L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'©OSM ©CARTO',maxZoom:18}).addTo(adminMap);}
 
 function loadData(){
     var token=getCookie(cookieName);
@@ -855,7 +859,7 @@ function updateStats(){
     var todayCount=allData.filter(function(v){return v.time&&v.time.startsWith(today)}).length;
     document.getElementById('sToday').textContent=todayCount;
     var ips={},countries={},isps={},now=Date.now(),recent1h=0;
-    allData.forEach(function(v){ips[v.ip]=(ips[v.ip]||0)+1;if(v.country_code)countries[v.country_code]=1;if(v.isp&&v.isp!=='鏈煡')isps[v.isp]=(isps[v.isp]||0)+1;if(v.time){var t=new Date(v.time.replace(/-/g,'/')).getTime();if(now-t<3600000)recent1h++;}});
+    allData.forEach(function(v){ips[v.ip]=(ips[v.ip]||0)+1;if(v.country_code)countries[v.country_code]=1;if(v.isp&&v.isp!=='未知')isps[v.isp]=(isps[v.isp]||0)+1;if(v.time){var t=new Date(v.time.replace(/-/g,'/')).getTime();if(now-t<3600000)recent1h++;}});
     document.getElementById('sUnique').textContent=Object.keys(ips).length;
     document.getElementById('sCountries').textContent=Object.keys(countries).length;
     document.getElementById('sRecent').textContent=recent1h;
@@ -865,14 +869,14 @@ function updateStats(){
 
 function buildFilters(){
     var cs={},isps={};
-    allData.forEach(function(v){if(v.country)cs[v.country]=v.country_code||'';if(v.isp&&v.isp!=='鏈煡')isps[v.isp]=1;});
-    var cSel=document.getElementById('countryFilter');cSel.innerHTML='<option value="">鍏ㄩ儴鍥藉</option>';
+    allData.forEach(function(v){if(v.country)cs[v.country]=v.country_code||'';if(v.isp&&v.isp!=='未知')isps[v.isp]=1;});
+    var cSel=document.getElementById('countryFilter');cSel.innerHTML='<option value="">全部国家</option>';
     Object.keys(cs).sort().forEach(function(c){var o=document.createElement('option');o.value=cs[c];o.textContent=c;cSel.appendChild(o);});
-    var iSel=document.getElementById('ispFilter');iSel.innerHTML='<option value="">鍏ㄩ儴ISP</option>';
+    var iSel=document.getElementById('ispFilter');iSel.innerHTML='<option value="">全部ISP</option>';
     Object.keys(isps).sort().forEach(function(i){var o=document.createElement('option');o.value=i;o.textContent=i;iSel.appendChild(o);});
 }
 
-function codeToFlag(code){if(!code||code.length!==2)return '馃弫';var offset=127397;return String.fromCodePoint(code.charCodeAt(0)+offset)+String.fromCodePoint(code.charCodeAt(1)+offset);}
+function codeToFlag(code){if(!code||code.length!==2)return '🏁';var offset=127397;return String.fromCodePoint(code.charCodeAt(0)+offset)+String.fromCodePoint(code.charCodeAt(1)+offset);}
 
 function filterData(){
     var q=document.getElementById('searchInput').value.toLowerCase();
@@ -893,7 +897,7 @@ function renderTable(){
     var start=(currentPage-1)*pageSize;
     var end=Math.min(start+pageSize,total);
     var pageData=filteredData.slice(start,end);
-    if(pageData.length===0){tbody.innerHTML='<tr><td colspan="9"><div class="empty"><div class="emoji">馃摥</div>鏆傛棤璁板綍</div></td></tr>';}
+    if(pageData.length===0){tbody.innerHTML='<tr><td colspan="9"><div class="empty"><div class="emoji">📭</div>暂无记录</div></td></tr>';}
     else{
         var html='';
         pageData.forEach(function(v,i){
@@ -905,22 +909,22 @@ function renderTable(){
             html+='<td class="ip-cell" onclick="showDetail(\\''+v.ip+'\\')">'+v.ip+'</td>';
             html+='<td class="flag-cell">'+codeToFlag(v.country_code)+'</td>';
             html+='<td>'+(v.country||'-')+'</td>';
-            html+='<td>'+(v.city||'-')+(v.region&&v.region!=='鏈煡'?'<br><span style="font-size:10px;color:var(--text-muted)">'+v.region+'</span>':'')+'</td>';
+            html+='<td>'+(v.city||'-')+(v.region&&v.region!=='未知'?'<br><span style="font-size:10px;color:var(--text-muted)">'+v.region+'</span>':'')+'</td>';
             html+='<td style="font-size:11px">'+(v.isp||'-')+'</td>';
             html+='<td class="ua-cell" title="'+ua.replace(/"/g,'&quot;')+'">'+shortUa+'</td>';
             html+='<td class="time-cell">'+(v.time||'-')+'</td>';
-            html+='<td><a class="map-link" href="https://www.google.com/maps?q='+(v.latitude||0)+','+(v.longitude||0)+'" target="_blank">馃搷</a> <span class="detail-link" onclick="showDetail(\\''+v.ip+'\\')">璇︽儏</span><span class="del-link" onclick="showDelConfirm('+i+')">鉁?/span></td>';
+            html+='<td><a class="map-link" href="https://www.google.com/maps?q='+(v.latitude||0)+','+(v.longitude||0)+'" target="_blank">📍</a> <span class="detail-link" onclick="showDetail(\\''+v.ip+'\\')">详情</span><span class="del-link" onclick="showDelConfirm('+i+')">✕</span></td>';
             html+='</tr>';
         });
         tbody.innerHTML=html;
     }
     var pagDiv=document.getElementById('pagination');
-    if(totalPages<=1){pagDiv.innerHTML='<span>鍏?'+total+' 鏉?/span>';return;}
-    var phtml='<button onclick="goPage('+(currentPage-1)+')" '+(currentPage===1?'disabled':'')+'>涓婁竴椤?/button>';
+    if(totalPages<=1){pagDiv.innerHTML='<span>共 '+total+' 条</span>';return;}
+    var phtml='<button onclick="goPage('+(currentPage-1)+')" '+(currentPage===1?'disabled':'')+'>上一页</button>';
     var startP=Math.max(1,currentPage-4),endP=Math.min(totalPages,currentPage+4);
     for(var p=startP;p<=endP;p++)phtml+='<button class="'+(p===currentPage?'active':'')+'" onclick="goPage('+p+')">'+p+'</button>';
-    phtml+='<button onclick="goPage('+(currentPage+1)+')" '+(currentPage===totalPages?'disabled':'')+'>涓嬩竴椤?/button>';
-    phtml+='<span style="margin-left:10px">'+total+'鏉?/ '+totalPages+'椤?/span>';
+    phtml+='<button onclick="goPage('+(currentPage+1)+')" '+(currentPage===totalPages?'disabled':'')+'>下一页</button>';
+    phtml+='<span style="margin-left:10px">'+total+'条 / '+totalPages+'页</span>';
     pagDiv.innerHTML=phtml;
 }
 
@@ -928,9 +932,9 @@ function goPage(p){var totalPages=Math.ceil(filteredData.length/pageSize)||1;if(
 
 function showDetail(ip){
     var v=allData.find(function(x){return x.ip===ip;});
-    if(!v){alert('鏈壘鍒拌褰?);return;}
-    document.getElementById('detailTitle').textContent='馃實 '+ip+' 璇︽儏';
-    var html='',fields=[['IP鍦板潃',v.ip],['鍥藉',(v.country||'-')+' '+codeToFlag(v.country_code)],['鍩庡競',v.city||'-'],['鍦板尯',v.region||'-'],['缁忕含搴?,(v.latitude||'')+', '+(v.longitude||'')],['鏃跺尯',v.timezone||'-'],['ISP',v.isp||'-'],['AS缂栧彿',v.as||'-'],['閭紪',v.zip||'-'],['璁块棶鏃堕棿',v.time||'-']];
+    if(!v){alert('未找到记录');return;}
+    document.getElementById('detailTitle').textContent='🌍 '+ip+' 详情';
+    var html='',fields=[['IP地址',v.ip],['国家',(v.country||'-')+' '+codeToFlag(v.country_code)],['城市',v.city||'-'],['地区',v.region||'-'],['经纬度',(v.latitude||'')+', '+(v.longitude||'')],['时区',v.timezone||'-'],['ISP',v.isp||'-'],['AS编号',v.as||'-'],['邮编',v.zip||'-'],['访问时间',v.time||'-']];
     fields.forEach(function(f){html+='<div class="modal-row"><div class="label">'+f[0]+'</div><div class="value">'+f[1]+'</div></div>';});
     document.getElementById('detailInfo').innerHTML=html;
     var lat=v.latitude||0,lon=v.longitude||0;
@@ -940,7 +944,7 @@ function showDetail(ip){
 }
 function closeDetail(){document.getElementById('detailModal').style.display='none';}
 
-function showDelConfirm(idx){pendingDeleteIndex=idx;var v=filteredData[idx];document.getElementById('delConfirmText').textContent='纭鍒犻櫎 '+v.ip+' 鐨勮褰曪紵';document.getElementById('delConfirmModal').style.display='flex';}
+function showDelConfirm(idx){pendingDeleteIndex=idx;var v=filteredData[idx];document.getElementById('delConfirmText').textContent='确认删除 '+v.ip+' 的记录？';document.getElementById('delConfirmModal').style.display='flex';}
 function closeDelConfirm(){document.getElementById('delConfirmModal').style.display='none';pendingDeleteIndex=-1;}
 function doDelete(){
     if(pendingDeleteIndex<0)return;
@@ -952,7 +956,7 @@ function doDelete(){
 
 function updateMap(){
     if(!adminMap)return;mapMarkers.forEach(function(m){adminMap.removeLayer(m);});mapMarkers=[];
-    var seen={};allData.forEach(function(v){if(seen[v.ip])return;seen[v.ip]=1;var lat=parseFloat(v.latitude),lon=parseFloat(v.longitude);if(isNaN(lat)||isNaN(lon))return;var flag=codeToFlag(v.country_code);var popup='<b>'+flag+' '+(v.city||'鏈煡')+'</b><br>IP: '+v.ip+'<br>ISP: '+(v.isp||'鏈煡')+'<br>'+(v.time||'');var marker=L.circleMarker([lat,lon],{radius:5,fillColor:'#7c4dff',color:'#448aff',weight:1,opacity:0.8,fillOpacity:0.6}).addTo(adminMap).bindPopup(popup);mapMarkers.push(marker);});
+    var seen={};allData.forEach(function(v){if(seen[v.ip])return;seen[v.ip]=1;var lat=parseFloat(v.latitude),lon=parseFloat(v.longitude);if(isNaN(lat)||isNaN(lon))return;var flag=codeToFlag(v.country_code);var popup='<b>'+flag+' '+(v.city||'未知')+'</b><br>IP: '+v.ip+'<br>ISP: '+(v.isp||'未知')+'<br>'+(v.time||'');var marker=L.circleMarker([lat,lon],{radius:5,fillColor:'#7c4dff',color:'#448aff',weight:1,opacity:0.8,fillOpacity:0.6}).addTo(adminMap).bindPopup(popup);mapMarkers.push(marker);});
     if(mapMarkers.length>0)adminMap.fitBounds(mapMarkers.map(function(m){return m.getLatLng()}),{padding:[30,30],maxZoom:6});
 }
 
@@ -962,13 +966,13 @@ function updateCharts(){
     var labels=Object.keys(days).map(function(d){return d.substring(5);}),values=Object.values(days);
     var ctx1=document.getElementById('trendChart').getContext('2d');
     if(trendChart)trendChart.destroy();
-    trendChart=new Chart(ctx1,{type:'line',data:{labels:labels,datasets:[{label:'璁块棶閲?,data:values,borderColor:'#7c4dff',backgroundColor:'rgba(124,77,255,0.1)',fill:true,tension:0.4,pointBackgroundColor:'#18ffff',pointRadius:4}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#5c6bc0'},grid:{color:'rgba(124,77,255,0.08)'}},y:{ticks:{color:'#5c6bc0',stepSize:1},grid:{color:'rgba(124,77,255,0.08)'},beginAtZero:true}}}});
-    var ccs={};allData.forEach(function(v){if(v.country&&v.country!=='鏈煡')ccs[v.country]=(ccs[v.country]||0)+1;});
+    trendChart=new Chart(ctx1,{type:'line',data:{labels:labels,datasets:[{label:'访问量',data:values,borderColor:'#7c4dff',backgroundColor:'rgba(124,77,255,0.1)',fill:true,tension:0.4,pointBackgroundColor:'#18ffff',pointRadius:4}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#5c6bc0'},grid:{color:'rgba(124,77,255,0.08)'}},y:{ticks:{color:'#5c6bc0',stepSize:1},grid:{color:'rgba(124,77,255,0.08)'},beginAtZero:true}}}});
+    var ccs={};allData.forEach(function(v){if(v.country&&v.country!=='未知')ccs[v.country]=(ccs[v.country]||0)+1;});
     var cSorted=Object.entries(ccs).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
     var ctx2=document.getElementById('countryChart').getContext('2d');
     if(countryChart)countryChart.destroy();
     countryChart=new Chart(ctx2,{type:'doughnut',data:{labels:cSorted.map(function(x){return x[0]}),datasets:[{data:cSorted.map(function(x){return x[1]}),backgroundColor:['#7c4dff','#448aff','#18ffff','#69f0ae','#ffd740'],borderColor:'#111640',borderWidth:2}]},options:{responsive:true,plugins:{legend:{position:'bottom',labels:{color:'#9fa8da',font:{size:11}}}}}});
-    var isps={};allData.forEach(function(v){if(v.isp&&v.isp!=='鏈煡')isps[v.isp]=(isps[v.isp]||0)+1;});
+    var isps={};allData.forEach(function(v){if(v.isp&&v.isp!=='未知')isps[v.isp]=(isps[v.isp]||0)+1;});
     var iSorted=Object.entries(isps).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
     var ctx3=document.getElementById('ispChart').getContext('2d');
     if(ispChart)ispChart.destroy();
@@ -979,8 +983,8 @@ function exportCSV(){
     var token=getCookie(cookieName);
     fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+token}})
     .then(function(r){return r.json();}).then(function(d){
-        var visits=d.visits||[];if(!visits.length){alert('鏃犺褰?);return;}
-        var csv='\uFEFFIP,鍥藉,鍥藉浠ｇ爜,鍩庡競,鍦板尯,绾害,缁忓害,鏃跺尯,ISP,AS,UA,鏉ユ簮,鏃堕棿\n';
+        var visits=d.visits||[];if(!visits.length){alert('无记录');return;}
+        var csv='\uFEFFIP,国家,国家代码,城市,地区,纬度,经度,时区,ISP,AS,UA,来源,时间\n';
         visits.forEach(function(v){csv+=[v.ip,v.country,v.country_code,v.city,v.region,v.latitude,v.longitude,v.timezone,v.isp,v.as||'','"'+(v.user_agent||'').replace(/"/g,'""')+'"',v.referer||'',v.time].join(',')+'\n';});
         var blob=new Blob([csv],{type:'text/csv;charset=utf-8'});var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='ip_visits_'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url);
     });
@@ -993,7 +997,7 @@ function doClear(){var token=getCookie(cookieName);fetch('/api/admin/clear',{met
 </html>"""
 
 
-# ========== 璺敱 ==========
+# ========== 路由 ==========
 
 @app.get("/", response_class=HTMLResponse)
 async def get_ip_info(request: Request):
@@ -1022,16 +1026,16 @@ async def get_ip_info(request: Request):
     for old, new in [
         ("__IP__", ip), ("__TIMESTAMP__", timestamp),
         ("__COUNTRY_FLAG__", country_flag),
-        ("__COUNTRY__", location.get("country", "鏈煡")),
-        ("__COUNTRY_CODE__", location.get("country_code", "鏈煡")),
-        ("__CITY__", location.get("city", "鏈煡")),
-        ("__REGION__", location.get("region_name", "鏈煡")),
-        ("__REGION_NAME__", location.get("region_name", "鏈煡")),
+        ("__COUNTRY__", location.get("country", "未知")),
+        ("__COUNTRY_CODE__", location.get("country_code", "未知")),
+        ("__CITY__", location.get("city", "未知")),
+        ("__REGION__", location.get("region_name", "未知")),
+        ("__REGION_NAME__", location.get("region_name", "未知")),
         ("__LAT__", str(lat)), ("__LON__", str(lon)),
-        ("__TIMEZONE__", location.get("timezone", "鏈煡")),
-        ("__ISP__", location.get("isp", "鏈煡")),
-        ("__AS__", location.get("as", "鏈煡")),
-        ("__ZIP__", location.get("zip", "鏈煡")),
+        ("__TIMEZONE__", location.get("timezone", "未知")),
+        ("__ISP__", location.get("isp", "未知")),
+        ("__AS__", location.get("as", "未知")),
+        ("__ZIP__", location.get("zip", "未知")),
         ("__MAP_BBOX__", map_bbox),
         ("__JSON_DATA__", json_str.replace("<", "&lt;").replace(">", "&gt;")),
         ("__JSON_RAW__", json_raw),
@@ -1051,16 +1055,16 @@ async def get_info_api(request: Request):
 async def query_ip(ip: str = Query(...)):
     parts = ip.strip().split(".")
     if len(parts) != 4:
-        return {"error": "IP鏍煎紡閿欒", "ip": ip, "location": None}
+        return {"error": "IP格式错误", "ip": ip, "location": None}
     try:
         for p in parts:
             if not 0 <= int(p) <= 255:
-                return {"error": "IP鏍煎紡閿欒", "ip": ip, "location": None}
+                return {"error": "IP格式错误", "ip": ip, "location": None}
     except ValueError:
-        return {"error": "IP鏍煎紡閿欒", "ip": ip, "location": None}
+        return {"error": "IP格式错误", "ip": ip, "location": None}
     location = await _fetch_location(ip)
     if not location:
-        return {"error": "鏌ヨ澶辫触", "ip": ip, "location": None}
+        return {"error": "查询失败", "ip": ip, "location": None}
     return {"ip": ip, "location": location, "error": None}
 
 
@@ -1095,7 +1099,7 @@ async def health_check():
     return {"status": "ok"}
 
 
-# ========== 绠＄悊鍛楢PI ==========
+# ========== 管理员API ==========
 
 def _verify_admin(request: Request) -> bool:
     auth = request.headers.get("Authorization", "")
@@ -1117,39 +1121,39 @@ async def admin_login(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid request")
     if pwd != ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="瀵嗙爜閿欒")
+        raise HTTPException(status_code=401, detail="密码错误")
     token = base64.b64encode(pwd.encode("utf-8")).decode("utf-8")
-    return {"token": token, "message": "鐧诲綍鎴愬姛"}
+    return {"token": token, "message": "登录成功"}
 
 
 @app.get("/api/admin/visits")
 async def admin_get_visits(request: Request):
     if not _verify_admin(request):
-        raise HTTPException(status_code=401, detail="鏈巿鏉?)
+        raise HTTPException(status_code=401, detail="未授权")
     visits = _load_visits()
     return {"visits": visits, "total": len(visits)}
 
 
 @app.delete("/api/admin/visits/{ip}")
 async def admin_delete_visit(ip: str, request: Request):
-    """鍒犻櫎鎸囧畾IP鐨勮闂褰曪紙鍒犻櫎鏈€杩戜竴鏉★級"""
+    """删除指定IP的访问记录（删除最近一条）"""
     if not _verify_admin(request):
-        raise HTTPException(status_code=401, detail="鏈巿鏉?)
+        raise HTTPException(status_code=401, detail="未授权")
     visits = _load_visits()
     for i in range(len(visits)-1, -1, -1):
         if visits[i].get("ip") == ip:
             visits.pop(i)
             _save_visits(visits, force=True)
-            return {"message": "宸插垹闄?, "ip": ip}
-    raise HTTPException(status_code=404, detail="鏈壘鍒拌褰?)
+            return {"message": "已删除", "ip": ip}
+    raise HTTPException(status_code=404, detail="未找到记录")
 
 
 @app.post("/api/admin/clear")
 async def admin_clear_visits(request: Request):
     if not _verify_admin(request):
-        raise HTTPException(status_code=401, detail="鏈巿鏉?)
+        raise HTTPException(status_code=401, detail="未授权")
     _save_visits([], force=True)
-    return {"message": "宸叉竻绌?}
+    return {"message": "已清空"}
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -1160,9 +1164,9 @@ async def admin_page():
 @app.get("/manifest.json")
 async def manifest():
     return JSONResponse({
-        "name": "IP浣嶇疆妫€娴?, "short_name": "IP瀹氫綅", "start_url": "/",
+        "name": "IP位置检测", "short_name": "IP定位", "start_url": "/",
         "display": "standalone", "background_color": "#0a0e27", "theme_color": "#7c4dff",
-        "icons": [{"src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>馃實</text></svg>", "sizes": "any", "type": "image/svg+xml"}]
+        "icons": [{"src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌍</text></svg>", "sizes": "any", "type": "image/svg+xml"}]
     })
 
 
