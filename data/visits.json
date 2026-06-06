@@ -253,5 +253,20 @@
     "user_agent": "Go-http-client/2.0",
     "referer": "",
     "time": "2026-06-06 07:24:17"
+  },
+  {
+    "ip": "34.82.29.197",
+    "country": "美国",
+    "country_code": "US",
+    "city": "The Dalles",
+    "region": "俄勒冈州",
+    "latitude": 45.5945,
+    "longitude": -121.1786,
+    "timezone": "America/Los_Angeles",
+    "isp": "Google LLC",
+    "as": "AS396982 Google LLC",
+    "user_agent": "Go-http-client/2.0",
+    "referer": "",
+    "time": "2026-06-06 07:38:55"
   }
 ]
