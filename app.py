@@ -834,12 +834,14 @@ function delCookie(n){document.cookie=n+'=; path=/; max-age=0';}
 (function(){var t=getCookie(cookieName);if(t)showAdmin();})();
 
 function doLogin(){
-    var pwd=document.getElementById('pwdInput').value;
+    var pwd=document.getElementById('pwdInput').value.trim();
+    if(!pwd){document.getElementById('loginError').style.display='block';return;}
+    var btn=document.querySelector('.login-box button');
+    btn.disabled=true;btn.textContent='...';
     fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pwd})})
-    .then(function(r){if(r.ok)return r.json();throw new Error();})
-    .then(function(d){setCookie(cookieName,d.token);showAdmin();})
-    .catch(function(){document.getElementById('loginError').style.display='block';setTimeout(function(){document.getElementById('loginError').style.display='none';},3000);});
-}
+    .then(function(r){if(r.ok)return r.json();return r.text().then(function(t){throw new Error(t);});})
+    .then(function(d){setCookie(cookieName,d.token);showAdmin();btn.disabled=false;btn.textContent='Login';})
+    .catch(function(e){document.getElementById('loginError').style.display='block';btn.disabled=false;btn.textContent='Login';setTimeout(function(){document.getElementById('loginError').style.display='none';},5000);});}
 function doLogout(){delCookie(cookieName);document.getElementById('adminPanel').style.display='none';document.getElementById('loginPage').style.display='flex';if(refreshTimer)clearInterval(refreshTimer);}
 
 function showAdmin(){document.getElementById('loginPage').style.display='none';document.getElementById('adminPanel').style.display='block';initMap();loadData();if(refreshTimer)clearInterval(refreshTimer);refreshTimer=setInterval(loadData,30000);}
