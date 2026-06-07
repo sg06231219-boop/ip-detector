@@ -706,6 +706,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;bac
 .tbl tr:hover{background:rgba(124,77,255,.05)}
 .btn-sm{padding:4px 10px;border-radius:6px;border:1px solid rgba(124,77,255,.3);background:transparent;color:#9fa8da;cursor:pointer;font-size:12px}
 .btn-sm:hover{border-color:#7c4dff;color:#7c4dff}
+.btn-rm{border-color:rgba(255,82,82,.3);color:#ff5252}.btn-rm:hover{background:rgba(255,82,82,.15)}
 .pager{display:flex;gap:6px;justify-content:center;margin-top:16px;flex-wrap:wrap}
 .pager button{padding:6px 12px;border-radius:8px;border:1px solid rgba(124,77,255,.2);background:transparent;color:#9fa8da;cursor:pointer;font-size:13px}
 .pager button.on{background:#7c4dff;color:#fff;border-color:#7c4dff}
@@ -714,13 +715,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;bac
 .modal{background:#111640;border:1px solid rgba(124,77,255,.3);border-radius:16px;padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto}
 .modal h3{margin-bottom:16px}.modal p{margin:8px 0;font-size:14px;color:#9fa8da}
 .modal-close{display:block;margin-top:16px;padding:10px 20px;border-radius:10px;border:none;background:#7c4dff;color:#fff;cursor:pointer;width:100%}
+.ver{color:#5c6bc0;font-size:11px;margin-top:12px;text-align:center}
 </style>
 </head>
 <body>
 <div id="loginWrap" class="login-wrap">
   <div class="login-box">
     <h2>Admin Login</h2>
-    <input type="password" id="pwdInput" placeholder="Enter password">
+    <input type="password" id="pwdInput" placeholder="Enter password" autocomplete="current-password">
     <button id="loginBtn" onclick="doLogin()">Login</button>
     <div id="errMsg" class="err"></div>
   </div>
@@ -745,13 +747,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;bac
     <tbody id="tbody"></tbody>
   </table>
   <div id="pager" class="pager"></div>
+  <div class="ver" id="verLabel"></div>
 </div>
 <div id="detailModal" class="modal-bg" onclick="if(event.target===this)this.style.display='none'">
   <div class="modal"><h3 id="detailTitle"></h3><div id="detailBody"></div>
   <button class="modal-close" onclick="document.getElementById('detailModal').style.display='none'">Close</button></div>
 </div>
 <script>
-var ALL=[],FILT=[],PG=1,PS=30,BUSY=false;
+var ALL=[],FILT=[],PG=1,PS=30,BUSY=false,VER="9.5.0";
 function ck(n){try{var m=document.cookie.match(new RegExp("(^| )"+n+"=([^;]+)"));return m?m[2]:"";}catch(e){return "";}}
 function sk(n,v){document.cookie=n+"="+v+";path=/;max-age=86400;SameSite=Lax";}
 function dk(n){document.cookie=n+"=;path=/;max-age=0;SameSite=Lax";}
@@ -775,6 +778,7 @@ function doLogout(){dk("ip_detect_admin");location.reload();}
 function enterAdmin(){
   var lw=document.getElementById("loginWrap"),aw=document.getElementById("adminWrap");
   if(lw)lw.style.display="none";if(aw)aw.style.display="block";
+  var ve=document.getElementById("verLabel");if(ve)ve.textContent="v"+VER;
   loadData();setInterval(loadData,30000);
 }
 function loadData(){
@@ -815,7 +819,7 @@ function renderTable(){
   var tb=document.getElementById("tbody");if(!tb)return;
   var total=FILT.length,pages=Math.ceil(total/PS)||1;if(PG>pages)PG=pages;
   var s=(PG-1)*PS,data=FILT.slice(s,s+PS);
-  tb.innerHTML=data.map(function(v,i){return '<tr><td>'+(s+i+1)+'</td><td>'+v.ip+'</td><td>'+fl(v.country_code)+' '+(v.country||"")+'</td><td>'+(v.city||"-")+'</td><td>'+(v.isp||"-").substring(0,20)+'</td><td style="font-size:12px">'+(v.time?new Date(v.time).toLocaleString():"-")+'</td><td><button class="btn-sm" onclick="showDetail('+(s+i)+')">Info</button></td></tr>';}).join("");
+  tb.innerHTML=data.map(function(v,i){return '<tr><td>'+(s+i+1)+'</td><td>'+v.ip+'</td><td>'+fl(v.country_code)+' '+(v.country||"")+'</td><td>'+(v.city||"-")+'</td><td>'+(v.isp||"-").substring(0,20)+'</td><td style="font-size:12px">'+(v.time?new Date(v.time).toLocaleString():"-")+'</td><td><button class="btn-sm" onclick="showDetail('+(s+i)+')">Info</button> <button class="btn-sm btn-rm" onclick="delVisit('+i+')">Del</button></td></tr>';}).join("");
   var pg=document.getElementById("pager");if(!pg)return;
   var h='<button onclick="goPg('+(PG-1)+')" '+(PG===1?"disabled":"")+'>Prev</button>';
   for(var p=Math.max(1,PG-3),ep=Math.min(pages,PG+3);p<=ep;p++){h+='<button class="'+(p===PG?"on":"")+'" onclick="goPg('+p+')">'+p+'</button>';}
@@ -829,6 +833,15 @@ function showDetail(idx){
   if(t)t.textContent=v.ip;if(b)b.innerHTML='<p>'+fl(v.country_code)+' '+(v.country||"-")+'</p><p>'+(v.city||"-")+'</p><p>'+(v.region||"-")+'</p><p>'+(v.isp||"-")+'</p><p>'+(v.time?new Date(v.time).toLocaleString():"-")+'</p><p>'+(v.latitude||0)+', '+(v.longitude||0)+'</p>';
   document.getElementById("detailModal").style.display="flex";
 }
+function delVisit(idx){
+  var v=FILT[idx];if(!v)return;
+  if(!confirm("Delete "+v.ip+"?"))return;
+  var t=ck("ip_detect_admin");
+  fetch("/api/admin/visits",{method:"DELETE",headers:{"Authorization":"Bearer "+t,"Content-Type":"application/json"},body:JSON.stringify({ip:v.ip})})
+  .then(function(r){return r.json();})
+  .then(function(d){if(d.deleted||d.ok){loadData();}else{alert("Failed: "+(d.message||"unknown"));}})
+  .catch(function(x){alert("Error: "+x.message);});
+}
 function doExport(){
   if(!ALL.length){alert("No data");return;}
   var rows=["IP,Country,City,ISP,Time,Lat,Lon"];
@@ -836,11 +849,14 @@ function doExport(){
   var blob=new Blob([rows.join(String.fromCharCode(10))],{type:"text/csv"});
   var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="ip-visits.csv";a.click();
 }
+// Unregister any old service workers to prevent caching issues
+if("serviceWorker" in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
 document.getElementById("pwdInput").addEventListener("keydown",function(ev){if(ev.key==="Enter")doLogin();});
 (function(){var t=ck("ip_detect_admin");if(t){fetch("/api/admin/visits",{headers:{"Authorization":"Bearer "+t}}).then(function(r){if(r.ok){enterAdmin();}else{dk("ip_detect_admin");}}).catch(function(){});}})();
 </script>
 </body>
 </html>"""
+
 
 
 
@@ -953,7 +969,7 @@ async def get_stats():
 
 @app.get("/api/version")
 async def get_version():
-    return {"version": "9.4.0", "name": "IP Detector"}
+    return {"version": "9.5.0", "name": "IP Detector"}
 
 
 
