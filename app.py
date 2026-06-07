@@ -672,261 +672,172 @@ ADMIN_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>IP Detector - Admin</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔒</text></svg>">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0e27;color:#e8eaf6;min-height:100vh}
+body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#0a0e27;color:#e8eaf6;min-height:100vh}
 .login-wrap{display:flex;justify-content:center;align-items:center;min-height:100vh}
-.login-box{background:#111640;border:1px solid rgba(124,77,255,0.3);border-radius:20px;padding:40px;width:360px;text-align:center}
+.login-box{background:#111640;border:1px solid rgba(124,77,255,.3);border-radius:20px;padding:40px;width:360px;text-align:center}
 .login-box h2{margin-bottom:24px;font-size:22px}
-.login-box input{width:100%;padding:14px;border-radius:12px;border:1px solid rgba(124,77,255,0.3);background:rgba(255,255,255,0.05);color:#e8eaf6;font-size:16px;outline:none;margin-bottom:16px}
+.login-box input{width:100%;padding:14px;border-radius:12px;border:1px solid rgba(124,77,255,.3);background:rgba(255,255,255,.05);color:#e8eaf6;font-size:16px;outline:none;margin-bottom:16px}
 .login-box input:focus{border-color:#7c4dff}
 .login-box button{width:100%;padding:14px;border-radius:12px;border:none;background:linear-gradient(135deg,#7c4dff,#448aff);color:#fff;font-size:16px;font-weight:600;cursor:pointer}
-.login-box button:disabled{opacity:0.5;cursor:not-allowed}
+.login-box button:disabled{opacity:.5;cursor:not-allowed}
 .err{color:#ff5252;font-size:13px;margin-top:8px;display:none}
 .admin-wrap{display:none;padding:20px;max-width:1200px;margin:0 auto}
 .admin-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px}
 .admin-header h2{font-size:20px}
 .header-btns{display:flex;gap:8px}
-.btn{padding:8px 16px;border-radius:10px;border:1px solid rgba(124,77,255,0.3);background:rgba(255,255,255,0.05);color:#9fa8da;cursor:pointer;font-size:13px}
+.btn{padding:8px 16px;border-radius:10px;border:1px solid rgba(124,77,255,.3);background:rgba(255,255,255,.05);color:#9fa8da;cursor:pointer;font-size:13px}
 .btn:hover{border-color:#7c4dff;color:#7c4dff}
-.btn-danger{border-color:rgba(255,82,82,0.3);color:#ff5252}.btn-danger:hover{background:rgba(255,82,82,0.15)}
+.btn-danger{border-color:rgba(255,82,82,.3);color:#ff5252}.btn-danger:hover{background:rgba(255,82,82,.15)}
 .stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px}
-.stat{background:#111640;border:1px solid rgba(124,77,255,0.2);border-radius:12px;padding:16px;text-align:center}
+.stat{background:#111640;border:1px solid rgba(124,77,255,.2);border-radius:12px;padding:16px;text-align:center}
 .stat .num{font-size:28px;font-weight:800;background:linear-gradient(135deg,#7c4dff,#448aff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
 .stat .lbl{font-size:11px;color:#5c6bc0;text-transform:uppercase;letter-spacing:1px;margin-top:4px}
+.rt-bar{background:rgba(105,240,174,.08);border:1px solid rgba(105,240,174,.2);border-radius:10px;padding:10px 16px;margin-bottom:16px;display:flex;align-items:center;gap:8px;font-size:13px}
+.rt-dot{width:8px;height:8px;border-radius:50%;background:#69f0ae;animation:bk 1.5s infinite}
+@keyframes bk{0%,100%{opacity:1}50%{opacity:.3}}
 .filters{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
-.filters input,.filters select{padding:8px 12px;border-radius:10px;border:1px solid rgba(124,77,255,0.2);background:rgba(255,255,255,0.05);color:#e8eaf6;font-size:13px;outline:none}
-.filters input:focus,.filters select:focus{border-color:#7c4dff}
+.filters input,.filters select{padding:8px 12px;border-radius:10px;border:1px solid rgba(124,77,255,.2);background:rgba(255,255,255,.05);color:#e8eaf6;font-size:13px;outline:none}
 .filters select option{background:#111640}
 .tbl{width:100%;border-collapse:collapse;font-size:13px}
-.tbl th{text-align:left;padding:10px 8px;border-bottom:1px solid rgba(124,77,255,0.2);color:#5c6bc0;font-size:11px;text-transform:uppercase;letter-spacing:1px}
-.tbl td{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,0.03)}
-.tbl tr:hover{background:rgba(124,77,255,0.05)}
-.tbl .flag{font-size:16px;margin-right:4px}
-.tbl .btn-sm{padding:4px 10px;border-radius:6px;border:1px solid rgba(124,77,255,0.3);background:transparent;color:#9fa8da;cursor:pointer;font-size:12px;margin-right:4px}
-.tbl .btn-sm:hover{border-color:#7c4dff;color:#7c4dff}
-.tbl .btn-del{border-color:rgba(255,82,82,0.3);color:#ff5252}.tbl .btn-del:hover{background:rgba(255,82,82,0.15)}
+.tbl th{text-align:left;padding:10px 8px;border-bottom:1px solid rgba(124,77,255,.2);color:#5c6bc0;font-size:11px;text-transform:uppercase;letter-spacing:1px}
+.tbl td{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.03)}
+.tbl tr:hover{background:rgba(124,77,255,.05)}
+.btn-sm{padding:4px 10px;border-radius:6px;border:1px solid rgba(124,77,255,.3);background:transparent;color:#9fa8da;cursor:pointer;font-size:12px}
+.btn-sm:hover{border-color:#7c4dff;color:#7c4dff}
 .pager{display:flex;gap:6px;justify-content:center;margin-top:16px;flex-wrap:wrap}
-.pager button{padding:6px 12px;border-radius:8px;border:1px solid rgba(124,77,255,0.2);background:transparent;color:#9fa8da;cursor:pointer;font-size:13px}
-.pager button.active{background:#7c4dff;color:#fff;border-color:#7c4dff}
-.pager button:disabled{opacity:0.3;cursor:not-allowed}
-.modal-bg{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);justify-content:center;align-items:center;z-index:999}
-.modal{background:#111640;border:1px solid rgba(124,77,255,0.3);border-radius:16px;padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto}
+.pager button{padding:6px 12px;border-radius:8px;border:1px solid rgba(124,77,255,.2);background:transparent;color:#9fa8da;cursor:pointer;font-size:13px}
+.pager button.on{background:#7c4dff;color:#fff;border-color:#7c4dff}
+.pager button:disabled{opacity:.3;cursor:not-allowed}
+.modal-bg{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);justify-content:center;align-items:center;z-index:999}
+.modal{background:#111640;border:1px solid rgba(124,77,255,.3);border-radius:16px;padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto}
 .modal h3{margin-bottom:16px}.modal p{margin:8px 0;font-size:14px;color:#9fa8da}
 .modal-close{display:block;margin-top:16px;padding:10px 20px;border-radius:10px;border:none;background:#7c4dff;color:#fff;cursor:pointer;width:100%}
-.realtime-bar{background:rgba(105,240,174,0.08);border:1px solid rgba(105,240,174,0.2);border-radius:10px;padding:10px 16px;margin-bottom:16px;display:flex;align-items:center;gap:8px;font-size:13px}
-.realtime-dot{width:8px;height:8px;border-radius:50%;background:#69f0ae;animation:blinker 1.5s infinite}
-@keyframes blinker{0%,100%{opacity:1}50%{opacity:0.3}}
 </style>
 </head>
 <body>
-
 <div id="loginWrap" class="login-wrap">
   <div class="login-box">
-    <h2>🔒 Admin Login</h2>
-    <input type="password" id="pwdInput" placeholder="Enter password" onkeydown="if(event.key==='Enter')doLogin()">
+    <h2>Admin Login</h2>
+    <input type="password" id="pwdInput" placeholder="Enter password">
     <button id="loginBtn" onclick="doLogin()">Login</button>
     <div id="errMsg" class="err"></div>
   </div>
 </div>
-
 <div id="adminWrap" class="admin-wrap">
   <div class="admin-header">
-    <h2>📊 IP Access Dashboard</h2>
+    <h2>IP Access Dashboard</h2>
     <div class="header-btns">
-      <button class="btn" onclick="loadData()">🔄 Refresh</button>
-      <button class="btn" onclick="exportCSV()">📥 CSV</button>
-      <button class="btn btn-danger" onclick="confirmClear()">🗑️ Clear All</button>
+      <button class="btn" onclick="loadData()">Refresh</button>
+      <button class="btn" onclick="doExport()">CSV</button>
       <button class="btn btn-danger" onclick="doLogout()">Logout</button>
     </div>
   </div>
-
-  <div id="realtimeBar" class="realtime-bar">
-    <span class="realtime-dot"></span>
-    <span id="realtimeText">Loading...</span>
-  </div>
-
+  <div class="rt-bar"><span class="rt-dot"></span><span id="rtText">Loading...</span></div>
   <div id="statsRow" class="stats-row"></div>
-
   <div class="filters">
-    <input id="searchBox" placeholder="Search IP/city..." oninput="filterData()">
-    <select id="countrySel" onchange="filterData()"><option value="">All Countries</option></select>
-    <select id="ispSel" onchange="filterData()"><option value="">All ISPs</option></select>
+    <input id="searchBox" placeholder="Search IP/city..." oninput="doFilter()">
+    <select id="countrySel" onchange="doFilter()"><option value="">All Countries</option></select>
   </div>
-
   <table class="tbl">
-    <thead><tr><th>#</th><th>IP</th><th>Country</th><th>City</th><th>ISP</th><th>Time</th><th>Action</th></tr></thead>
+    <thead><tr><th>#</th><th>IP</th><th>Country</th><th>City</th><th>ISP</th><th>Time</th><th>Act</th></tr></thead>
     <tbody id="tbody"></tbody>
   </table>
   <div id="pager" class="pager"></div>
 </div>
-
 <div id="detailModal" class="modal-bg" onclick="if(event.target===this)this.style.display='none'">
-  <div class="modal"><h3 id="detailTitle"></h3><div id="detailBody"></div><button class="modal-close" onclick="document.getElementById('detailModal').style.display='none'">Close</button></div>
+  <div class="modal"><h3 id="detailTitle"></h3><div id="detailBody"></div>
+  <button class="modal-close" onclick="document.getElementById('detailModal').style.display='none'">Close</button></div>
 </div>
-
-<div id="confirmModal" class="modal-bg" onclick="if(event.target===this)this.style.display='none'">
-  <div class="modal"><h3>⚠️ Confirm Clear</h3><p>Delete ALL access records? This cannot be undone.</p>
-  <div style="display:flex;gap:10px;margin-top:16px">
-    <button class="btn btn-danger" style="flex:1" onclick="doClear()">Delete All</button>
-    <button class="btn" style="flex:1" onclick="document.getElementById('confirmModal').style.display='none'">Cancel</button>
-  </div></div>
-</div>
-
 <script>
-var ALL=[],FILTERED=[],PAGE=1,PS=30,LOADING=false;
-
-function ck(n){try{var m=document.cookie.match(new RegExp('(^| )'+n+'=([^;]+)'));return m?m[2]:'';}catch(e){return '';}}
-function sk(n,v){document.cookie=n+'='+v+';path=/;max-age=86400;SameSite=Lax';}
-function dk(n){document.cookie=n+'=;path=/;max-age=0;SameSite=Lax';}
-
-function flag(cc){if(!cc||cc.length!==2)return'';var o=127397;try{return String.fromCodePoint(cc.charCodeAt(0)+o)+String.fromCodePoint(cc.charCodeAt(1)+o);}catch(e){return'';}}
-
+var ALL=[],FILT=[],PG=1,PS=30,BUSY=false;
+function ck(n){try{var m=document.cookie.match(new RegExp("(^| )"+n+"=([^;]+)"));return m?m[2]:"";}catch(e){return "";}}
+function sk(n,v){document.cookie=n+"="+v+";path=/;max-age=86400;SameSite=Lax";}
+function dk(n){document.cookie=n+"=;path=/;max-age=0;SameSite=Lax";}
+function fl(cc){if(!cc||cc.length!==2)return "";try{return String.fromCodePoint(cc.charCodeAt(0)+127397)+String.fromCodePoint(cc.charCodeAt(1)+127397);}catch(e){return "";}}
 function doLogin(){
-  var p=document.getElementById('pwdInput'),e=document.getElementById('errMsg'),b=document.getElementById('loginBtn');
+  var p=document.getElementById("pwdInput"),e=document.getElementById("errMsg"),b=document.getElementById("loginBtn");
   if(!p||!e||!b)return;
-  var pw=p.value.trim();if(!pw){e.textContent='Please enter password';e.style.display='block';return;}
-  e.style.display='none';b.disabled=true;b.textContent='Logging in...';
-  fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})})
+  var pw=p.value.trim();
+  if(!pw){e.textContent="Please enter password";e.style.display="block";return;}
+  e.style.display="none";b.disabled=true;b.textContent="Logging in...";
+  fetch("/api/admin/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:pw})})
   .then(function(r){return r.json();})
-  .then(function(d){
-    b.disabled=false;b.textContent='Login';
-    if(d.token){sk('ip_detect_admin',d.token);enterAdmin();}
-    else{e.textContent=d.message||'Login failed';e.style.display='block';}
-  })
-  .catch(function(ex){b.disabled=false;b.textContent='Login';e.textContent='Network error: '+ex.message;e.style.display='block';});
+  .then(function(d){b.disabled=false;b.textContent="Login";if(d.token){sk("ip_detect_admin",d.token);enterAdmin();}else{e.textContent=d.message||"Login failed";e.style.display="block";}})
+  .catch(function(x){b.disabled=false;b.textContent="Login";e.textContent="Error: "+x.message;e.style.display="block";});
 }
-
-function doLogout(){dk('ip_detect_admin');location.reload();}
+function doLogout(){dk("ip_detect_admin");location.reload();}
 function enterAdmin(){
-  var lw=document.getElementById('loginWrap'),aw=document.getElementById('adminWrap');
-  if(lw)lw.style.display='none';if(aw)aw.style.display='block';
+  var lw=document.getElementById("loginWrap"),aw=document.getElementById("adminWrap");
+  if(lw)lw.style.display="none";if(aw)aw.style.display="block";
   loadData();setInterval(loadData,30000);
 }
-
 function loadData(){
-  var t=ck('ip_detect_admin');if(!t){doLogout();return;}
-  if(LOADING)return;LOADING=true;
-  fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+t}})
+  var t=ck("ip_detect_admin");if(!t){doLogout();return;}if(BUSY)return;BUSY=true;
+  fetch("/api/admin/visits",{headers:{"Authorization":"Bearer "+t}})
   .then(function(r){if(r.status===401){doLogout();return null;}return r.json();})
-  .then(function(d){
-    LOADING=false;if(!d)return;
-    ALL=(d.visits||[]).slice().reverse();
-    buildFilters();filterData();renderStats();updateRealtime();
-  })
-  .catch(function(){LOADING=false;});
+  .then(function(d){BUSY=false;if(!d)return;ALL=(d.visits||[]).slice().reverse();doFilter();renderStats();renderRT();})
+  .catch(function(){BUSY=false;});
 }
-
-function updateRealtime(){
-  var now=Date.now(),h1=ALL.filter(function(v){return v.time&&(now-new Date(v.time).getTime())<3600000}).length;
-  var m5=ALL.filter(function(v){return v.time&&(now-new Date(v.time).getTime())<300000}).length;
-  var last=ALL[0];
-  var el=document.getElementById('realtimeText');
-  if(el)el.textContent='1h: '+h1+' | 5m: '+m5+(last?' | Latest: '+flag(last.country_code)+' '+last.ip+' '+(last.city||'?'):'');
+function renderRT(){
+  var now=Date.now(),h1=0,m5=0;
+  for(var i=0;i<ALL.length;i++){if(ALL[i].time){var df=now-new Date(ALL[i].time).getTime();if(df<3600000)h1++;if(df<300000)m5++;}}
+  var el=document.getElementById("rtText");var last=ALL[0];
+  if(el)el.textContent="1h: "+h1+" | 5m: "+m5+(last?" | Last: "+fl(last.country_code)+" "+last.ip+" "+(last.city||""):"");
 }
-
 function renderStats(){
-  var el=document.getElementById('statsRow');if(!el)return;
-  var total=ALL.length,today=new Date().toISOString().slice(0,10);
-  var td=ALL.filter(function(v){return v.time&&v.time.startsWith(today)}).length;
+  var el=document.getElementById("statsRow");if(!el)return;
+  var total=ALL.length,today=new Date().toISOString().slice(0,10),td=0;
+  for(var i=0;i<ALL.length;i++){if(ALL[i].time&&ALL[i].time.startsWith(today))td++;}
   var uniq=new Set(ALL.map(function(v){return v.ip})).size;
-  var cn=new Set(ALL.map(function(v){return v.country}).filter(function(c){return c&&c!=='Unknown'&&c!=='未知'})).size;
-  el.innerHTML='<div class="stat"><div class="num">'+total+'</div><div class="lbl">Total</div></div>'
-    +'<div class="stat"><div class="num">'+td+'</div><div class="lbl">Today</div></div>'
-    +'<div class="stat"><div class="num">'+uniq+'</div><div class="lbl">Unique IPs</div></div>'
-    +'<div class="stat"><div class="num">'+cn+'</div><div class="lbl">Countries</div></div>';
+  var cn=new Set(ALL.map(function(v){return v.country}).filter(function(c){return c&&c!=="Unknown"&&c!==""})).size;
+  el.innerHTML='<div class="stat"><div class="num">'+total+'</div><div class="lbl">Total</div></div><div class="stat"><div class="num">'+td+'</div><div class="lbl">Today</div></div><div class="stat"><div class="num">'+uniq+'</div><div class="lbl">Unique IPs</div></div><div class="stat"><div class="num">'+cn+'</div><div class="lbl">Countries</div></div>';
 }
-
-function buildFilters(){
-  var cs={},is={};ALL.forEach(function(v){if(v.country)cs[v.country]=1;if(v.isp)is[v.isp]=1;});
-  var cS=document.getElementById('countrySel'),iS=document.getElementById('ispSel');
-  if(cS){cS.innerHTML='<option value="">All Countries</option>';Object.keys(cs).sort().forEach(function(c){
-    var cc='';var found=ALL.find(function(v){return v.country===c});if(found&&found.country_code)cc=found.country_code;
-    cS.innerHTML+='<option value="'+c+'">'+flag(cc)+c+'</option>';});}
-  if(iS){iS.innerHTML='<option value="">All ISPs</option>';Object.keys(is).sort().forEach(function(i){iS.innerHTML+='<option value="'+i+'">'+i+'</option>';});}
+function doFilter(){
+  var q=(document.getElementById("searchBox")||{}).value||"",qL=q.toLowerCase();
+  var cc=(document.getElementById("countrySel")||{}).value||"";
+  FILT=ALL.filter(function(v){if(cc&&v.country!==cc)return false;if(qL){var h=(v.ip||"")+(v.city||"")+(v.country||"")+(v.isp||"");if(h.toLowerCase().indexOf(qL)<0)return false;}return true;});
+  PG=1;renderTable();buildCountries();
 }
-
-function filterData(){
-  var q=(document.getElementById('searchBox')||{}).value||'',qL=q.toLowerCase();
-  var cc=(document.getElementById('countrySel')||{}).value||'';
-  var ic=(document.getElementById('ispSel')||{}).value||'';
-  FILTERED=ALL.filter(function(v){
-    if(cc&&v.country!==cc)return false;if(ic&&v.isp!==ic)return false;
-    if(qL){var h=(v.ip||'')+(v.city||'')+(v.country||'')+(v.region||'')+(v.isp||'');if(h.toLowerCase().indexOf(qL)<0)return false;}
-    return true;
-  });PAGE=1;renderTable();
+function buildCountries(){
+  var cs={};ALL.forEach(function(v){if(v.country)cs[v.country]=1;});
+  var el=document.getElementById("countrySel");if(!el)return;var cur=el.value;
+  el.innerHTML='<option value="">All Countries</option>';
+  Object.keys(cs).sort().forEach(function(c){var found=ALL.find(function(v){return v.country===c});var opt=document.createElement("option");opt.value=c;opt.textContent=fl(found?found.country_code:"")+" "+c;el.appendChild(opt);});
+  el.value=cur;
 }
-
 function renderTable(){
-  var tb=document.getElementById('tbody');if(!tb)return;
-  var total=FILTERED.length,pages=Math.ceil(total/PS)||1;
-  if(PAGE>pages)PAGE=pages;var s=(PAGE-1)*PS,data=FILTERED.slice(s,s+PS);
-  tb.innerHTML=data.map(function(v,i){
-    var fl=flag(v.country_code)||'🌐',t=v.time?new Date(v.time).toLocaleString():'-';
-    return '<tr><td>'+(s+i+1)+'</td><td>'+v.ip+'</td><td><span class="flag">'+fl+'</span>'+v.country+'</td><td>'+(v.city||'-')+'</td><td>'+(v.isp||'-').substring(0,20)+'</td><td style="font-size:12px">'+t+'</td><td><button class="btn-sm" onclick="showDetail('+(s+i)+')">📋</button><button class="btn-sm btn-del" onclick="delRow('+(s+i)+')">✕</button></td></tr>';
-  }).join('');
-  var pg=document.getElementById('pager');if(!pg)return;
-  var h='<button onclick="goPage('+(PAGE-1)+')" '+(PAGE===1?'disabled':'')+'>◀</button>';
-  for(var p=Math.max(1,PAGE-3),ep=Math.min(pages,PAGE+3);p<=ep;p++)h+='<button class="'+(p===PAGE?'active':'')+'" onclick="goPage('+p+')">'+p+'</button>';
-  h+='<button onclick="goPage('+(PAGE+1)+')" '+(PAGE===pages?'disabled':'')+'>▶</button>';
+  var tb=document.getElementById("tbody");if(!tb)return;
+  var total=FILT.length,pages=Math.ceil(total/PS)||1;if(PG>pages)PG=pages;
+  var s=(PG-1)*PS,data=FILT.slice(s,s+PS);
+  tb.innerHTML=data.map(function(v,i){return '<tr><td>'+(s+i+1)+'</td><td>'+v.ip+'</td><td>'+fl(v.country_code)+' '+(v.country||"")+'</td><td>'+(v.city||"-")+'</td><td>'+(v.isp||"-").substring(0,20)+'</td><td style="font-size:12px">'+(v.time?new Date(v.time).toLocaleString():"-")+'</td><td><button class="btn-sm" onclick="showDetail('+(s+i)+')">Info</button></td></tr>';}).join("");
+  var pg=document.getElementById("pager");if(!pg)return;
+  var h='<button onclick="goPg('+(PG-1)+')" '+(PG===1?"disabled":"")+'>Prev</button>';
+  for(var p=Math.max(1,PG-3),ep=Math.min(pages,PG+3);p<=ep;p++){h+='<button class="'+(p===PG?"on":"")+'" onclick="goPg('+p+')">'+p+'</button>';}
+  h+='<button onclick="goPg('+(PG+1)+')" '+(PG===pages?"disabled":"")+'>Next</button>';
   pg.innerHTML=h;
 }
-
-function goPage(p){PAGE=p;renderTable();}
-
+function goPg(p){PG=p;renderTable();}
 function showDetail(idx){
-  var v=FILTERED[idx];if(!v)return;
-  var t=document.getElementById('detailTitle'),b=document.getElementById('detailBody');
-  if(t)t.textContent=v.ip;
-  if(b)b.innerHTML='<p>🚩 Country: '+flag(v.country_code)+' '+(v.country||'-')+'</p><p>🏙️ City: '+(v.city||'-')+'</p><p>📍 Region: '+(v.region||'-')+'</p><p>🌐 ISP: '+(v.isp||'-')+'</p><p>🔗 AS: '+(v.as||'-')+'</p><p>🕐 Time: '+(v.time?new Date(v.time).toLocaleString():'-')+'</p><p>📐 Coords: '+(v.latitude||0)+', '+(v.longitude||0)+'</p><p>💻 UA: '+(v.user_agent||'-')+'</p>';
-  var m=document.getElementById('detailModal');if(m)m.style.display='flex';
+  var v=FILT[idx];if(!v)return;
+  var t=document.getElementById("detailTitle"),b=document.getElementById("detailBody");
+  if(t)t.textContent=v.ip;if(b)b.innerHTML='<p>'+fl(v.country_code)+' '+(v.country||"-")+'</p><p>'+(v.city||"-")+'</p><p>'+(v.region||"-")+'</p><p>'+(v.isp||"-")+'</p><p>'+(v.time?new Date(v.time).toLocaleString():"-")+'</p><p>'+(v.latitude||0)+', '+(v.longitude||0)+'</p>';
+  document.getElementById("detailModal").style.display="flex";
 }
-
-function delRow(idx){
-  if(!confirm('Delete this record?'))return;var v=FILTERED[idx];if(!v)return;
-  var t=ck('ip_detect_admin');
-  fetch('/api/admin/visits/index/'+(ALL.length-1-(FILTERED.indexOf(v))+''),{method:'DELETE',headers:{'Authorization':'Bearer '+t}})
-  .then(function(r){if(r.ok)loadData();else alert('Delete failed');}).catch(function(){alert('Network error');});
+function doExport(){
+  if(!ALL.length){alert("No data");return;}
+  var rows=["IP,Country,City,ISP,Time,Lat,Lon"];
+  ALL.forEach(function(v){rows.push((v.ip||"")+","+(v.country||"")+","+(v.city||"")+","+(v.isp||"")+","+(v.time||"")+","+(v.latitude||"")+","+(v.longitude||""));});
+  var blob=new Blob([rows.join(String.fromCharCode(10))],{type:"text/csv"});
+  var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="ip-visits.csv";a.click();
 }
-
-function confirmClear(){var m=document.getElementById('confirmModal');if(m)m.style.display='flex';}
-function doClear(){
-  var t=ck('ip_detect_admin');
-  fetch('/api/admin/visits',{method:'DELETE',headers:{'Authorization':'Bearer '+t}})
-  .then(function(r){var m=document.getElementById('confirmModal');if(m)m.style.display='none';if(r.ok)loadData();else alert('Clear failed');}).catch(function(){alert('Network error');});
-}
-
-
-function exportCSV(){
-  if(!ALL.length){alert('No data');return;}
-  var h='IP,Country,City,ISP,Time,Latitude,Longitude\n';
-  var rows=ALL.map(function(v){return [v.ip||'',v.country||'',v.city||'',v.isp||'',v.time||'',v.latitude||'',v.longitude||''].map(function(c){return '"'+String(c).replace(/"/g,'""')+'"';}).join(',');});
-  var blob=new Blob([h+rows.join('\n')],{type:'text/csv;charset=utf-8;'});
-  var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ip-visits-'+new Date().toISOString().slice(0,10)+'.csv';a.click();
-}
-
-(function(){
-  var t=ck('ip_detect_admin');
-  if(t){
-    fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+t}})
-    .then(function(r){if(r.ok)enterAdmin();else dk('ip_detect_admin');})
-    .catch(function(){
-  var t=ck('ip_detect_admin');
-  if(t){
-    fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+t}})
-    .then(function(r){if(r.ok)enterAdmin();else dk('ip_detect_admin');})
-    .catch(function(){
-  var t=ck('ip_detect_admin');
-  if(t){
-    fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+t}})
-    .then(function(r){if(r.ok)enterAdmin();else dk('ip_detect_admin');})
-    .catch(function(){});
-  }
-})();
+document.getElementById("pwdInput").addEventListener("keydown",function(ev){if(ev.key==="Enter")doLogin();});
+(function(){var t=ck("ip_detect_admin");if(t){fetch("/api/admin/visits",{headers:{"Authorization":"Bearer "+t}}).then(function(r){if(r.ok){enterAdmin();}else{dk("ip_detect_admin");}}).catch(function(){});}})();
 </script>
 </body>
 </html>"""
+
 
 
 
