@@ -6,6 +6,7 @@ import json
 import io
 import csv
 import time
+import asyncio
 import base64
 from datetime import datetime
 from typing import Optional, Dict, Any
@@ -423,7 +424,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             .query-box { flex-direction: column; }
             .query-box button { width: 100%; }
         }
-    </style>
+    
+    .live-visitors{margin-top:16px;display:flex;justify-content:center;gap:12px;flex-wrap:wrap}
+    .lv-item{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:10px 16px;display:flex;align-items:center;gap:8px;font-size:13px;animation:fadeInUp .4s ease-out both}
+    .lv-flag{font-size:20px}.lv-info{line-height:1.3}.lv-ip{color:var(--accent3);font-family:'Courier New',monospace;font-weight:600;font-size:12px}
+    .lv-loc{color:var(--text-muted);font-size:11px}.lv-time{color:var(--text-muted);font-size:10px}
+    .lv-live{width:6px;height:6px;border-radius:50%;background:var(--success);animation:pulse 2s infinite;margin-left:auto}
+</style>
 </head>
 <body>
     <canvas id="particles"></canvas>
@@ -436,6 +443,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <h1>🌍 IP 智能定位</h1>
             <p>实时检测您的网络身份与地理位置</p>
             <div class="social-proof">已有 <span id="totalUsers">-</span> 人使用</div>
+        <div id="liveVisitors" class="live-visitors"></div>
             <div class="status-badge">
                 <span class="status-dot"></span>
                 检测完成 · __TIMESTAMP__
@@ -627,7 +635,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     function showToast(m){var t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},2000)}
     function toggleJSON(b){b.classList.toggle('open');document.getElementById('jsonContent').classList.toggle('show')}
-    </script>
+    
+    // Live visitors on homepage
+    function loadLive(){
+      fetch('/api/stats').then(function(r){return r.json();}).then(function(d){
+        var el=document.getElementById('liveVisitors');if(!el||!d.recent||!d.recent.length)return;
+        el.innerHTML=d.recent.slice(0,6).map(function(v){
+          var fl='';try{if(v.country_code&&v.country_code.length===2){var o=127397;fl=String.fromCodePoint(v.country_code.charCodeAt(0)+o)+String.fromCodePoint(v.country_code.charCodeAt(1)+o);}}catch(e){}
+          var ago=Math.round((Date.now()-new Date(v.time).getTime())/60000);
+          return '<div class="lv-item"><span class="lv-flag">'+(fl||'🌐')+'</span><div class="lv-info"><div class="lv-ip">'+v.ip+'</div><div class="lv-loc">'+(v.city||'?')+', '+(v.country||'?')+'</div><div class="lv-time">'+(ago<1?'just now':ago+'m ago')+'</div></div><span class="lv-live"></span></div>';
+        }).join('');
+      }).catch(function(){});
+    }
+    loadLive();setInterval(loadLive,15000);
+</script>
 </body>
 </html>"""
 
@@ -636,269 +657,246 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 ADMIN_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>IP Detector Admin</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IP Detector - Admin</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔒</text></svg>">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0f0f1a;--bg-secondary:#1a1a2e;--text:#e0e0e0;--border:#333357;--accent:#7c4dff;--accent-hover:#9e7aff;--danger:#ff4757;--success:#2ed573}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
-.login-wrap{display:flex;justify-content:center;align-items:center;min-height:100vh;padding:20px}
-.login-box{background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;padding:40px;width:100%;max-width:400px}
-.login-box h1{text-align:center;margin-bottom:30px;font-size:24px}
-.login-box input{width:100%;padding:12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:16px;margin-bottom:15px}
-.login-box button{width:100%;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:6px;font-size:16px;cursor:pointer;transition:background .2s}
-.login-box button:hover{background:var(--accent-hover)}
-.login-box button:disabled{opacity:.6;cursor:not-allowed}
-.error{color:var(--danger);margin-top:10px;display:none}
-.admin-wrap{max-width:1400px;margin:0 auto;padding:20px}
-.admin-header{display:flex;justify-content:space-between;align-items:center;padding:20px 0;border-bottom:1px solid var(--border)}
-.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:15px;margin:20px 0}
-.stat-card{background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:15px;text-align:center}
-.stat-num{font-size:28px;font-weight:700;color:var(--accent)}
-.stat-label{font-size:12px;color:#888;margin-top:5px}
-.chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;margin:20px 0}
-.chart-box{background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:15px}
-.chart-box h3{margin-bottom:10px;font-size:14px;color:#888}
-.filters{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0}
-.filters input,.filters select{padding:8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text)}
-table{width:100%;border-collapse:collapse;margin-top:20px}
-th,td{padding:10px;text-align:left;border-bottom:1px solid var(--border)}
-th{background:var(--bg-secondary);font-weight:600;font-size:12px;text-transform:uppercase;color:#888}
-tr:hover{background:rgba(124,77,255,.1)}
-.btn-sm{padding:5px 10px;border-radius:4px;font-size:12px;cursor:pointer;border:none;margin-right:5px}
-.btn-view{background:var(--accent);color:#fff}
-.btn-del{background:var(--danger);color:#fff}
-.btn-clear{background:var(--danger);color:#fff;padding:10px 20px;border-radius:6px}
-.btn-logout{background:#333;color:#fff}
-.pagination{display:flex;gap:5px;justify-content:center;margin:20px 0}
-.pagination button{padding:8px 12px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text);cursor:pointer;border-radius:4px}
-.pagination button.active{background:var(--accent);border-color:var(--accent)}
-.pagination button:disabled{opacity:.5;cursor:not-allowed}
-#adminPanel{display:none}
-.modal{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.8);display:none;justify-content:center;align-items:center;z-index:1000}
-.modal-content{background:var(--bg-secondary);border-radius:12px;padding:30px;max-width:600px;width:90%;max-height:90vh;overflow-y:auto}
-.modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
-.modal-close{background:none;border:none;color:#888;font-size:24px;cursor:pointer}
-#adminMap{height:300px;border-radius:8px;margin-top:20px}
-.flag{font-size:20px;margin-right:8px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0e27;color:#e8eaf6;min-height:100vh}
+.login-wrap{display:flex;justify-content:center;align-items:center;min-height:100vh}
+.login-box{background:#111640;border:1px solid rgba(124,77,255,0.3);border-radius:20px;padding:40px;width:360px;text-align:center}
+.login-box h2{margin-bottom:24px;font-size:22px}
+.login-box input{width:100%;padding:14px;border-radius:12px;border:1px solid rgba(124,77,255,0.3);background:rgba(255,255,255,0.05);color:#e8eaf6;font-size:16px;outline:none;margin-bottom:16px}
+.login-box input:focus{border-color:#7c4dff}
+.login-box button{width:100%;padding:14px;border-radius:12px;border:none;background:linear-gradient(135deg,#7c4dff,#448aff);color:#fff;font-size:16px;font-weight:600;cursor:pointer}
+.login-box button:disabled{opacity:0.5;cursor:not-allowed}
+.err{color:#ff5252;font-size:13px;margin-top:8px;display:none}
+.admin-wrap{display:none;padding:20px;max-width:1200px;margin:0 auto}
+.admin-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px}
+.admin-header h2{font-size:20px}
+.header-btns{display:flex;gap:8px}
+.btn{padding:8px 16px;border-radius:10px;border:1px solid rgba(124,77,255,0.3);background:rgba(255,255,255,0.05);color:#9fa8da;cursor:pointer;font-size:13px}
+.btn:hover{border-color:#7c4dff;color:#7c4dff}
+.btn-danger{border-color:rgba(255,82,82,0.3);color:#ff5252}.btn-danger:hover{background:rgba(255,82,82,0.15)}
+.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px}
+.stat{background:#111640;border:1px solid rgba(124,77,255,0.2);border-radius:12px;padding:16px;text-align:center}
+.stat .num{font-size:28px;font-weight:800;background:linear-gradient(135deg,#7c4dff,#448aff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.stat .lbl{font-size:11px;color:#5c6bc0;text-transform:uppercase;letter-spacing:1px;margin-top:4px}
+.filters{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.filters input,.filters select{padding:8px 12px;border-radius:10px;border:1px solid rgba(124,77,255,0.2);background:rgba(255,255,255,0.05);color:#e8eaf6;font-size:13px;outline:none}
+.filters input:focus,.filters select:focus{border-color:#7c4dff}
+.filters select option{background:#111640}
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{text-align:left;padding:10px 8px;border-bottom:1px solid rgba(124,77,255,0.2);color:#5c6bc0;font-size:11px;text-transform:uppercase;letter-spacing:1px}
+.tbl td{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,0.03)}
+.tbl tr:hover{background:rgba(124,77,255,0.05)}
+.tbl .flag{font-size:16px;margin-right:4px}
+.tbl .btn-sm{padding:4px 10px;border-radius:6px;border:1px solid rgba(124,77,255,0.3);background:transparent;color:#9fa8da;cursor:pointer;font-size:12px;margin-right:4px}
+.tbl .btn-sm:hover{border-color:#7c4dff;color:#7c4dff}
+.tbl .btn-del{border-color:rgba(255,82,82,0.3);color:#ff5252}.tbl .btn-del:hover{background:rgba(255,82,82,0.15)}
+.pager{display:flex;gap:6px;justify-content:center;margin-top:16px;flex-wrap:wrap}
+.pager button{padding:6px 12px;border-radius:8px;border:1px solid rgba(124,77,255,0.2);background:transparent;color:#9fa8da;cursor:pointer;font-size:13px}
+.pager button.active{background:#7c4dff;color:#fff;border-color:#7c4dff}
+.pager button:disabled{opacity:0.3;cursor:not-allowed}
+.modal-bg{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);justify-content:center;align-items:center;z-index:999}
+.modal{background:#111640;border:1px solid rgba(124,77,255,0.3);border-radius:16px;padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto}
+.modal h3{margin-bottom:16px}.modal p{margin:8px 0;font-size:14px;color:#9fa8da}
+.modal-close{display:block;margin-top:16px;padding:10px 20px;border-radius:10px;border:none;background:#7c4dff;color:#fff;cursor:pointer;width:100%}
+.realtime-bar{background:rgba(105,240,174,0.08);border:1px solid rgba(105,240,174,0.2);border-radius:10px;padding:10px 16px;margin-bottom:16px;display:flex;align-items:center;gap:8px;font-size:13px}
+.realtime-dot{width:8px;height:8px;border-radius:50%;background:#69f0ae;animation:blinker 1.5s infinite}
+@keyframes blinker{0%,100%{opacity:1}50%{opacity:0.3}}
 </style>
 </head>
 <body>
 
-<div id="loginPage">
-<div class="login-wrap">
-<div class="login-box">
-<h1>🔐 Admin Login</h1>
-<input type="password" id="pwdInput" placeholder="Password" onkeypress="if(event.key==='Enter')doLogin()">
-<button onclick="doLogin()">Login</button>
-<div id="loginError" class="error"></div>
-</div>
-</div>
+<div id="loginWrap" class="login-wrap">
+  <div class="login-box">
+    <h2>🔒 Admin Login</h2>
+    <input type="password" id="pwdInput" placeholder="Enter password" onkeydown="if(event.key==='Enter')doLogin()">
+    <button id="loginBtn" onclick="doLogin()">Login</button>
+    <div id="errMsg" class="err"></div>
+  </div>
 </div>
 
-<div id="adminPanel">
-<div class="admin-wrap">
-<div class="admin-header">
-<h2>📊 IP Access Dashboard</h2>
-<div>
-<button class="btn-sm btn-clear" onclick="showConfirm()">🗑️ Clear All</button>
-<button class="btn-sm btn-logout" onclick="doLogout()">Logout</button>
-</div>
+<div id="adminWrap" class="admin-wrap">
+  <div class="admin-header">
+    <h2>📊 IP Access Dashboard</h2>
+    <div class="header-btns">
+      <button class="btn" onclick="loadData()">🔄 Refresh</button>
+      <button class="btn btn-danger" onclick="confirmClear()">🗑️ Clear All</button>
+      <button class="btn btn-danger" onclick="doLogout()">Logout</button>
+    </div>
+  </div>
+
+  <div id="realtimeBar" class="realtime-bar">
+    <span class="realtime-dot"></span>
+    <span id="realtimeText">Loading...</span>
+  </div>
+
+  <div id="statsRow" class="stats-row"></div>
+
+  <div class="filters">
+    <input id="searchBox" placeholder="Search IP/city..." oninput="filterData()">
+    <select id="countrySel" onchange="filterData()"><option value="">All Countries</option></select>
+    <select id="ispSel" onchange="filterData()"><option value="">All ISPs</option></select>
+  </div>
+
+  <table class="tbl">
+    <thead><tr><th>#</th><th>IP</th><th>Country</th><th>City</th><th>ISP</th><th>Time</th><th>Action</th></tr></thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div id="pager" class="pager"></div>
 </div>
 
-<div class="stats-grid" id="statsGrid"></div>
-
-<div class="chart-grid">
-<div class="chart-box"><h3>📈 7-Day Trend</h3><canvas id="trendChart"></canvas></div>
-<div class="chart-box"><h3>🌍 Top Countries</h3><canvas id="countryChart"></canvas></div>
-<div class="chart-box"><h3>🌐 Top ISPs</h3><canvas id="ispChart"></canvas></div>
+<div id="detailModal" class="modal-bg" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal"><h3 id="detailTitle"></h3><div id="detailBody"></div><button class="modal-close" onclick="document.getElementById('detailModal').style.display='none'">Close</button></div>
 </div>
 
-<div id="adminMap"></div>
-
-<div class="filters">
-<input type="text" id="searchInput" placeholder="Search IP/city..." oninput="filterData()">
-<select id="countryFilter" onchange="filterData()"><option value="">All Countries</option></select>
-<select id="ispFilter" onchange="filterData()"><option value="">All ISPs</option></select>
-</div>
-
-<table id="dataTable">
-<thead><tr><th>#</th><th>IP</th><th>Country</th><th>City</th><th>ISP</th><th>Time</th><th>Actions</th></tr></thead>
-<tbody id="tableBody"></tbody>
-</table>
-<div class="pagination" id="pagination"></div>
-</div>
-</div>
-
-<div class="modal" id="detailModal">
-<div class="modal-content">
-<div class="modal-header">
-<h3 id="detailTitle">Details</h3>
-<button class="modal-close" onclick="closeDetail()">×</button>
-</div>
-<div id="detailInfo"></div>
-</div>
-</div>
-
-<div class="modal" id="confirmModal">
-<div class="modal-content">
-<h3>⚠️ Confirm Clear</h3>
-<p style="margin:20px 0">Delete all records?</p>
-<div style="text-align:right">
-<button class="btn-sm" style="background:#333" onclick="closeConfirm()">Cancel</button>
-<button class="btn-sm btn-del" onclick="doClear()">Delete</button>
-</div>
-</div>
+<div id="confirmModal" class="modal-bg" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal"><h3>⚠️ Confirm Clear</h3><p>Delete ALL access records? This cannot be undone.</p>
+  <div style="display:flex;gap:10px;margin-top:16px">
+    <button class="btn btn-danger" style="flex:1" onclick="doClear()">Delete All</button>
+    <button class="btn" style="flex:1" onclick="document.getElementById('confirmModal').style.display='none'">Cancel</button>
+  </div></div>
 </div>
 
 <script>
-var allData=[], filteredData=[], currentPage=1, pageSize=30;
-var adminMap=null, mapMarkers=[], isLoading=false;
-var trendChart=null, countryChart=null, ispChart=null;
+var ALL=[],FILTERED=[],PAGE=1,PS=30,LOADING=false;
 
-function getCookie(n){try{var m=document.cookie.match(new RegExp('(^| )'+n+'=([^;]+)'));return m?m[2]:'';}catch(e){return '';}}
-function setCookie(n,v){try{document.cookie=n+'='+v+'; path=/; max-age=86400; SameSite=Lax';}catch(e){}}
-function delCookie(n){try{document.cookie=n+'=; path=/; max-age=0; SameSite=Lax';}catch(e){}}
+function ck(n){try{var m=document.cookie.match(new RegExp('(^| )'+n+'=([^;]+)'));return m?m[2]:'';}catch(e){return '';}}
+function sk(n,v){document.cookie=n+'='+v+';path=/;max-age=86400;SameSite=Lax';}
+function dk(n){document.cookie=n+'=;path=/;max-age=0;SameSite=Lax';}
+
+function flag(cc){if(!cc||cc.length!==2)return'';var o=127397;try{return String.fromCodePoint(cc.charCodeAt(0)+o)+String.fromCodePoint(cc.charCodeAt(1)+o);}catch(e){return'';}}
 
 function doLogin(){
-  var pwdEl=document.getElementById('pwdInput');
-  var errEl=document.getElementById('loginError');
-  var btnEl=document.querySelector('.login-box button');
-  if(!pwdEl||!errEl)return;
-  var pwd=pwdEl.value.trim();
-  if(!pwd){errEl.textContent='请输入密码';errEl.style.display='block';return;}
-  errEl.style.display='none';
-  if(btnEl){btnEl.disabled=true;btnEl.textContent='登录中...';}
-  fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pwd})})
-  .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+  var p=document.getElementById('pwdInput'),e=document.getElementById('errMsg'),b=document.getElementById('loginBtn');
+  if(!p||!e||!b)return;
+  var pw=p.value.trim();if(!pw){e.textContent='Please enter password';e.style.display='block';return;}
+  e.style.display='none';b.disabled=true;b.textContent='Logging in...';
+  fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})})
+  .then(function(r){return r.json();})
   .then(function(d){
-    if(btnEl){btnEl.disabled=false;btnEl.textContent='Login';}
-    if(d.token){setCookie('ip_detect_admin',d.token);showAdmin();}
-    else{errEl.textContent=d.message||'登录失败';errEl.style.display='block';}
+    b.disabled=false;b.textContent='Login';
+    if(d.token){sk('ip_detect_admin',d.token);enterAdmin();}
+    else{e.textContent=d.message||'Login failed';e.style.display='block';}
   })
-  .catch(function(e){
-    if(btnEl){btnEl.disabled=false;btnEl.textContent='Login';}
-    errEl.textContent='错误: '+e.message;errEl.style.display='block';
-  });
+  .catch(function(ex){b.disabled=false;b.textContent='Login';e.textContent='Network error: '+ex.message;e.style.display='block';});
 }
 
-function doLogout(){delCookie('ip_detect_admin');location.reload();}
-
-function showAdmin(){
-  var lp=document.getElementById('loginPage'),ap=document.getElementById('adminPanel');
-  if(lp)lp.style.display='none';
-  if(ap)ap.style.display='block';
-  initMap();loadData();
+function doLogout(){dk('ip_detect_admin');location.reload();}
+function enterAdmin(){
+  var lw=document.getElementById('loginWrap'),aw=document.getElementById('adminWrap');
+  if(lw)lw.style.display='none';if(aw)aw.style.display='block';
+  loadData();setInterval(loadData,30000);
 }
 
 function loadData(){
-  var token=getCookie('ip_detect_admin');
-  if(!token){doLogout();return;}
-  if(isLoading)return;isLoading=true;
-  fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+token}})
-  .then(function(r){if(r.status===401){doLogout();return null;}if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
-  .then(function(d){isLoading=false;if(!d)return;allData=(d.visits||[]).slice().reverse();buildFilters();filterData();updateStats();updateMap();updateCharts();})
-  .catch(function(e){isLoading=false;console.error('loadData:',e);});
+  var t=ck('ip_detect_admin');if(!t){doLogout();return;}
+  if(LOADING)return;LOADING=true;
+  fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+t}})
+  .then(function(r){if(r.status===401){doLogout();return null;}return r.json();})
+  .then(function(d){
+    LOADING=false;if(!d)return;
+    ALL=(d.visits||[]).slice().reverse();
+    buildFilters();filterData();renderStats();updateRealtime();
+  })
+  .catch(function(){LOADING=false;});
 }
 
-function initMap(){
-  if(adminMap)return;var el=document.getElementById('adminMap');if(!el)return;
-  try{adminMap=L.map('adminMap').setView([35,105],4);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'©OSM',maxZoom:18}).addTo(adminMap);}catch(e){console.error('Map:',e);}
+function updateRealtime(){
+  var now=Date.now(),h1=ALL.filter(function(v){return v.time&&(now-new Date(v.time).getTime())<3600000}).length;
+  var m5=ALL.filter(function(v){return v.time&&(now-new Date(v.time).getTime())<300000}).length;
+  var last=ALL[0];
+  var el=document.getElementById('realtimeText');
+  if(el)el.textContent='Last hour: '+h1+' visits | Last 5min: '+m5+(last?' | Latest: '+last.ip+' from '+(last.city||'?')+' at '+last.time:'');
+}
+
+function renderStats(){
+  var el=document.getElementById('statsRow');if(!el)return;
+  var total=ALL.length,today=new Date().toISOString().slice(0,10);
+  var td=ALL.filter(function(v){return v.time&&v.time.startsWith(today)}).length;
+  var uniq=new Set(ALL.map(function(v){return v.ip})).size;
+  var cn=new Set(ALL.map(function(v){return v.country}).filter(function(c){return c&&c!=='Unknown'&&c!=='未知'})).size;
+  el.innerHTML='<div class="stat"><div class="num">'+total+'</div><div class="lbl">Total</div></div>'
+    +'<div class="stat"><div class="num">'+td+'</div><div class="lbl">Today</div></div>'
+    +'<div class="stat"><div class="num">'+uniq+'</div><div class="lbl">Unique IPs</div></div>'
+    +'<div class="stat"><div class="num">'+cn+'</div><div class="lbl">Countries</div></div>';
 }
 
 function buildFilters(){
-  var cs={},is={};allData.forEach(function(v){if(v.country)cs[v.country]=1;if(v.isp)is[v.isp]=1;});
-  var cSel=document.getElementById('countryFilter'),iSel=document.getElementById('ispFilter');if(!cSel||!iSel)return;
-  cSel.innerHTML='<option value="">All Countries</option>';iSel.innerHTML='<option value="">All ISPs</option>';
-  Object.keys(cs).sort().forEach(function(c){cSel.innerHTML+='<option value="'+c+'">'+c+'</option>';});
-  Object.keys(is).sort().forEach(function(i){iSel.innerHTML+='<option value="'+i+'">'+i+'</option>';});
+  var cs={},is={};ALL.forEach(function(v){if(v.country)cs[v.country]=1;if(v.isp)is[v.isp]=1;});
+  var cS=document.getElementById('countrySel'),iS=document.getElementById('ispSel');
+  if(cS){cS.innerHTML='<option value="">All Countries</option>';Object.keys(cs).sort().forEach(function(c){
+    var cc='';var found=ALL.find(function(v){return v.country===c});if(found&&found.country_code)cc=found.country_code;
+    cS.innerHTML+='<option value="'+c+'">'+flag(cc)+c+'</option>';});}
+  if(iS){iS.innerHTML='<option value="">All ISPs</option>';Object.keys(is).sort().forEach(function(i){iS.innerHTML+='<option value="'+i+'">'+i+'</option>';});}
 }
 
 function filterData(){
-  var qEl=document.getElementById('searchInput'),cEl=document.getElementById('countryFilter'),iEl=document.getElementById('ispFilter');
-  var q=(qEl?qEl.value:'').toLowerCase(),cc=cEl?cEl.value:'',ic=iEl?iEl.value:'';
-  filteredData=allData.filter(function(v){
+  var q=(document.getElementById('searchBox')||{}).value||'',qL=q.toLowerCase();
+  var cc=(document.getElementById('countrySel')||{}).value||'';
+  var ic=(document.getElementById('ispSel')||{}).value||'';
+  FILTERED=ALL.filter(function(v){
     if(cc&&v.country!==cc)return false;if(ic&&v.isp!==ic)return false;
-    if(q){var h=(v.ip||'')+(v.city||'')+(v.country||'')+(v.region||'');if(h.toLowerCase().indexOf(q)<0)return false;}return true;
-  });currentPage=1;renderTable();
-}
-
-function updateStats(){
-  var el=document.getElementById('statsGrid');if(!el)return;var total=allData.length,today=new Date().toISOString().slice(0,10);
-  var todayC=allData.filter(function(v){return v.time&&v.time.startsWith(today)}).length;
-  var uniq=new Set(allData.map(function(v){return v.ip})).size;
-  var cntrs=new Set(allData.map(function(v){return v.country}).filter(function(c){return c&&c!=='Unknown'&&c!=='未知'})).size;
-  var recent=allData.filter(function(v){return v.time&&(Date.now()-new Date(v.time).getTime())<3600000}).length;
-  var topISP=Object.entries(allData.reduce(function(a,v){if(v.isp&&v.isp!=='Unknown'&&v.isp!=='未知')a[v.isp]=(a[v.isp]||0)+1;return a;},{})).sort(function(a,b){return b[1]-a[1]})[0];
-  el.innerHTML='<div class="stat-card"><div class="stat-num">'+total+'</div><div class="stat-label">Total</div></div><div class="stat-card"><div class="stat-num">'+todayC+'</div><div class="stat-label">Today</div></div><div class="stat-card"><div class="stat-num">'+uniq+'</div><div class="stat-label">Unique IPs</div></div><div class="stat-card"><div class="stat-num">'+cntrs+'</div><div class="stat-label">Countries</div></div><div class="stat-card"><div class="stat-num">'+recent+'</div><div class="stat-label">Last Hour</div></div><div class="stat-card"><div class="stat-num">'+(topISP?topISP[0].substring(0,15):'-')+'</div><div class="stat-label">Top ISP</div></div>';
+    if(qL){var h=(v.ip||'')+(v.city||'')+(v.country||'')+(v.region||'')+(v.isp||'');if(h.toLowerCase().indexOf(qL)<0)return false;}
+    return true;
+  });PAGE=1;renderTable();
 }
 
 function renderTable(){
-  var tbody=document.getElementById('tableBody');if(!tbody)return;var total=filteredData.length,pages=Math.ceil(total/pageSize)||1;
-  if(currentPage>pages)currentPage=pages;var start=(currentPage-1)*pageSize,data=filteredData.slice(start,start+pageSize);
-  tbody.innerHTML=data.map(function(v,i){var flag=codeToFlag(v.country_code)||'🌐',t=v.time?new Date(v.time).toLocaleString():'-';
-    return '<tr><td>'+(start+i+1)+'</td><td>'+v.ip+'</td><td><span class="flag">'+flag+'</span>'+v.country+'</td><td>'+(v.city||'-')+'</td><td>'+(v.isp||'-').substring(0,20)+'</td><td style="font-size:12px">'+t+'</td><td><button class="btn-sm btn-view" onclick="showDetail('+(start+i)+')">View</button><button class="btn-sm btn-del" onclick="deleteRow('+(start+i+')')">×</button></td></tr>';}).join('');
-  var pag=document.getElementById('pagination');if(!pag)return;
-  var ph='<button onclick="goPage('+(currentPage-1)+')" '+(currentPage===1?'disabled':'')+'>Prev</button>';
-  for(var p=Math.max(1,currentPage-4),ep=Math.min(pages,currentPage+4);p<=ep;p++)ph+='<button class="'+(p===currentPage?'active':'')+'" onclick="goPage('+p+')">'+p+'</button>';
-  ph+='<button onclick="goPage('+(currentPage+1)+')" '+(currentPage===pages?'disabled':'')+'>Next</button>';pag.innerHTML=ph;
+  var tb=document.getElementById('tbody');if(!tb)return;
+  var total=FILTERED.length,pages=Math.ceil(total/PS)||1;
+  if(PAGE>pages)PAGE=pages;var s=(PAGE-1)*PS,data=FILTERED.slice(s,s+PS);
+  tb.innerHTML=data.map(function(v,i){
+    var fl=flag(v.country_code)||'🌐',t=v.time?new Date(v.time).toLocaleString():'-';
+    return '<tr><td>'+(s+i+1)+'</td><td>'+v.ip+'</td><td><span class="flag">'+fl+'</span>'+v.country+'</td><td>'+(v.city||'-')+'</td><td>'+(v.isp||'-').substring(0,20)+'</td><td style="font-size:12px">'+t+'</td><td><button class="btn-sm" onclick="showDetail('+(s+i)+')">📋</button><button class="btn-sm btn-del" onclick="delRow('+(s+i)+')">✕</button></td></tr>';
+  }).join('');
+  var pg=document.getElementById('pager');if(!pg)return;
+  var h='<button onclick="goPage('+(PAGE-1)+')" '+(PAGE===1?'disabled':'')+'>◀</button>';
+  for(var p=Math.max(1,PAGE-3),ep=Math.min(pages,PAGE+3);p<=ep;p++)h+='<button class="'+(p===PAGE?'active':'')+'" onclick="goPage('+p+')">'+p+'</button>';
+  h+='<button onclick="goPage('+(PAGE+1)+')" '+(PAGE===pages?'disabled':'')+'>▶</button>';
+  pg.innerHTML=h;
 }
 
-function goPage(p){currentPage=p;renderTable();}
-function codeToFlag(cc){if(!cc||cc.length!==2)return'';try{var o=127397;return String.fromCodePoint(cc.charCodeAt(0)+o)+String.fromCodePoint(cc.charCodeAt(1)+o);}catch(e){return'';}}
+function goPage(p){PAGE=p;renderTable();}
 
 function showDetail(idx){
-  var v=filteredData[idx];if(!v)return;var tEl=document.getElementById('detailTitle'),iEl=document.getElementById('detailInfo');
-  if(tEl)tEl.textContent=v.ip;if(iEl)iEl.innerHTML='<p><b>Country:</b> '+codeToFlag(v.country_code)+' '+(v.country||'-')+'</p><p><b>City:</b> '+(v.city||'-')+'</p><p><b>Region:</b> '+(v.region||'-')+'</p><p><b>ISP:</b> '+(v.isp||'-')+'</p><p><b>AS:</b> '+(v.as||'-')+'</p><p><b>Time:</b> '+(v.time?new Date(v.time).toLocaleString():'-')+'</p><p><b>Lat/Lon:</b> '+(v.latitude||0)+', '+(v.longitude||0)+'</p><p><b>UA:</b> '+(v.user_agent||'-')+'</p>';
+  var v=FILTERED[idx];if(!v)return;
+  var t=document.getElementById('detailTitle'),b=document.getElementById('detailBody');
+  if(t)t.textContent=v.ip;
+  if(b)b.innerHTML='<p>🚩 Country: '+flag(v.country_code)+' '+(v.country||'-')+'</p><p>🏙️ City: '+(v.city||'-')+'</p><p>📍 Region: '+(v.region||'-')+'</p><p>🌐 ISP: '+(v.isp||'-')+'</p><p>🔗 AS: '+(v.as||'-')+'</p><p>🕐 Time: '+(v.time?new Date(v.time).toLocaleString():'-')+'</p><p>📐 Coords: '+(v.latitude||0)+', '+(v.longitude||0)+'</p><p>💻 UA: '+(v.user_agent||'-')+'</p>';
   var m=document.getElementById('detailModal');if(m)m.style.display='flex';
 }
-function closeDetail(){var m=document.getElementById('detailModal');if(m)m.style.display='none';}
 
-function deleteRow(idx){
-  if(!confirm('Delete?'))return;var v=filteredData[idx];if(!v)return;
-  var token=getCookie('ip_detect_admin');
-  fetch('/api/admin/visits/'+encodeURIComponent(v.ip),{method:'DELETE',headers:{'Authorization':'Bearer '+token}})
-  .then(function(r){if(r.ok)loadData();else alert('Failed');}).catch(function(){alert('Error');});
+function delRow(idx){
+  if(!confirm('Delete this record?'))return;var v=FILTERED[idx];if(!v)return;
+  var t=ck('ip_detect_admin');
+  fetch('/api/admin/visits/'+encodeURIComponent(v.ip),{method:'DELETE',headers:{'Authorization':'Bearer '+t}})
+  .then(function(r){if(r.ok)loadData();else alert('Delete failed');}).catch(function(){alert('Network error');});
 }
-function showConfirm(){var m=document.getElementById('confirmModal');if(m)m.style.display='flex';}
-function closeConfirm(){var m=document.getElementById('confirmModal');if(m)m.style.display='none';}
+
+function confirmClear(){var m=document.getElementById('confirmModal');if(m)m.style.display='flex';}
 function doClear(){
-  var token=getCookie('ip_detect_admin');
-  fetch('/api/admin/visits',{method:'DELETE',headers:{'Authorization':'Bearer '+token}})
-  .then(function(r){closeConfirm();if(r.ok)loadData();else alert('Failed');}).catch(function(){closeConfirm();alert('Error');});
+  var t=ck('ip_detect_admin');
+  fetch('/api/admin/visits',{method:'DELETE',headers:{'Authorization':'Bearer '+t}})
+  .then(function(r){var m=document.getElementById('confirmModal');if(m)m.style.display='none';if(r.ok)loadData();else alert('Clear failed');}).catch(function(){alert('Network error');});
 }
 
-function updateMap(){
-  if(!adminMap)return;mapMarkers.forEach(function(m){try{adminMap.removeLayer(m);}catch(e){}});mapMarkers=[];
-  var seen={};allData.forEach(function(v){if(seen[v.ip])return;seen[v.ip]=1;var lat=v.latitude||0,lon=v.longitude||0;if(!lat&&!lon)return;
-    try{var flag=codeToFlag(v.country_code)||'🌐';var mk=L.circleMarker([lat,lon],{radius:5,fillColor:'#7c4dff',color:'#448aff',weight:1,opacity:.8,fillOpacity:.6});mk.bindPopup('<b>'+flag+' '+(v.city||'?')+'</b><br>IP: '+v.ip);mk.addTo(adminMap);mapMarkers.push(mk);}catch(e){}});
-  try{adminMap.invalidateSize();}catch(e){}
-}
-
-function updateCharts(){
-  try{var days={};for(var i=6;i>=0;i--){var d=new Date(Date.now()-i*86400000);days[d.toISOString().slice(0,10)]=0;}
-  allData.forEach(function(v){if(v.time){var day=v.time.slice(0,10);if(days.hasOwnProperty(day))days[day]++;}});
-  var labels=Object.keys(days).map(function(d){return d.slice(5)}),values=Object.values(days);
-  var c1=document.getElementById('trendChart');if(c1){var x1=c1.getContext('2d');if(trendChart)trendChart.destroy();trendChart=new Chart(x1,{type:'line',data:{labels:labels,datasets:[{data:values,borderColor:'#7c4dff',fill:false,tension:.3}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,grid:{color:'#333'}}}}});}
-  var cs={};allData.forEach(function(v){if(v.country&&v.country!=='Unknown'&&v.country!=='未知')cs[v.country]=(cs[v.country]||0)+1;});
-  var cS=Object.entries(cs).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
-  var c2=document.getElementById('countryChart');if(c2){var x2=c2.getContext('2d');if(countryChart)countryChart.destroy();countryChart=new Chart(x2,{type:'pie',data:{labels:cS.map(function(x){return x[0]}),datasets:[{data:cS.map(function(x){return x[1]}),backgroundColor:['#7c4dff','#448aff','#ff6b6b','#2ed573','#ffa502']}]},options:{plugins:{legend:{position:'bottom'}}}});}
-  var is={};allData.forEach(function(v){if(v.isp&&v.isp!=='Unknown'&&v.isp!=='未知')is[v.isp]=(is[v.isp]||0)+1;});
-  var iS=Object.entries(is).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
-  var c3=document.getElementById('ispChart');if(c3){var x3=c3.getContext('2d');if(ispChart)ispChart.destroy();ispChart=new Chart(x3,{type:'bar',data:{labels:iS.map(function(x){return x[0].substring(0,15)}),datasets:[{data:iS.map(function(x){return x[1]}),backgroundColor:'#7c4dff'}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,grid:{color:'#333'}}}}});}
-  }catch(e){console.error('Charts:',e);}
-}
-
-(function(){var t=getCookie('ip_detect_admin');if(t){fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+t}}).then(function(r){if(r.ok)showAdmin();else delCookie('ip_detect_admin');}).catch(function(){});}})();
-window.onerror=function(m,u,l){console.error('[Admin]',m,'L'+l);return true;};
+(function(){
+  var t=ck('ip_detect_admin');
+  if(t){
+    fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+t}})
+    .then(function(r){if(r.ok)enterAdmin();else dk('ip_detect_admin');})
+    .catch(function(){});
+  }
+})();
 </script>
 </body>
-</html>
-"""
+</html>"""
+
+
 
 
 # ========== 路由 ==========
@@ -1006,8 +1004,26 @@ async def get_stats():
 
 @app.get("/api/version")
 async def get_version():
-    return {"version": "8.0.0", "name": "IP Detector"}
+    return {"version": "9.0.0", "name": "IP Detector"}
 
+
+
+
+@app.get("/api/events")
+async def sse_events(request: Request):
+    async def gen():
+        last_count = len(_load_visits())
+        for _ in range(120):
+            await asyncio.sleep(1)
+            current = len(_load_visits())
+            if current > last_count:
+                visits = _load_visits()
+                if visits:
+                    v = visits[-1]
+                    data = json.dumps({"ip": v.get("ip",""), "city": v.get("city",""), "country": v.get("country",""), "country_code": v.get("country_code",""), "time": v.get("time","")}, ensure_ascii=False)
+                    yield f"data: {data}\n\n"
+                last_count = current
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 @app.get("/health")
 async def health_check():
