@@ -12,6 +12,14 @@ from typing import Optional, Dict, Any
 
 app = FastAPI()
 
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # ========== 配置 ==========
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Lys13579")
 GITHUB_PAT = os.environ.get("GITHUB_PAT", "")
@@ -31,49 +39,56 @@ LOCATION_CACHE_TTL = 3600  # 1小时
 
 # ========== 数据存储（GitHub Contents API 持久化） ==========
 def _github_get_visits() -> list:
-    """从GitHub仓库读取visits.json"""
-    try:
-        headers = {
-            "Authorization": f"token {GITHUB_PAT}",
-            "Accept": "application/vnd.github.v3+json"
-        }
-        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{VISITS_PATH}?ref={GITHUB_BRANCH}"
-        resp = httpx.get(url, headers=headers, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            content = base64.b64decode(data["content"]).decode("utf-8")
-            visits = json.loads(content)
-            return visits if isinstance(visits, list) else []
-    except Exception:
-        pass
+    """从GitHub仓库读取visits.json（带3次重试）"""
+    for attempt in range(3):
+        try:
+            headers = {
+                "Authorization": f"token {GITHUB_PAT}",
+                "Accept": "application/vnd.github.v3+json"
+            }
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{VISITS_PATH}?ref={GITHUB_BRANCH}"
+            resp = httpx.get(url, headers=headers, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                decoded = base64.b64decode(data["content"]).decode("utf-8")
+                visits = json.loads(decoded)
+                return visits if isinstance(visits, list) else []
+            if resp.status_code == 404:
+                return []
+        except Exception:
+            if attempt < 2:
+                import time as _t; _t.sleep(1)
     return []
 
 def _github_save_visits(visits: list) -> bool:
-    """保存visits.json到GitHub仓库"""
-    try:
-        headers = {
-            "Authorization": f"token {GITHUB_PAT}",
-            "Accept": "application/vnd.github.v3+json"
-        }
-        # 先获取当前文件sha
-        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{VISITS_PATH}?ref={GITHUB_BRANCH}"
-        resp = httpx.get(url, headers=headers, timeout=10)
-        sha = resp.json().get("sha") if resp.status_code == 200 else None
-
-        content = base64.b64encode(
-            json.dumps(visits, ensure_ascii=False, indent=2).encode("utf-8")
-        ).decode("utf-8")
-        body = {
-            "message": f"Update visits.json ({len(visits)} records)",
-            "content": content,
-            "branch": GITHUB_BRANCH,
-        }
-        if sha:
-            body["sha"] = sha
-        resp = httpx.put(url, headers=headers, json=body, timeout=15)
-        return resp.status_code in (200, 201)
-    except Exception:
-        pass
+    """保存visits.json到GitHub仓库（带3次重试）"""
+    for attempt in range(3):
+        try:
+            headers = {
+                "Authorization": f"token {GITHUB_PAT}",
+                "Accept": "application/vnd.github.v3+json"
+            }
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{VISITS_PATH}?ref={GITHUB_BRANCH}"
+            resp = httpx.get(url, headers=headers, timeout=15)
+            sha = resp.json().get("sha") if resp.status_code == 200 else None
+            encoded = base64.b64encode(
+                json.dumps(visits, ensure_ascii=False, indent=2).encode("utf-8")
+            ).decode("utf-8")
+            body = {
+                "message": f"Update visits ({len(visits)})",
+                "content": encoded,
+                "branch": GITHUB_BRANCH,
+            }
+            if sha:
+                body["sha"] = sha
+            resp = httpx.put(url, headers=headers, json=body, timeout=20)
+            if resp.status_code in (200, 201):
+                return True
+            if resp.status_code == 409:
+                continue  # SHA conflict, retry
+        except Exception:
+            if attempt < 2:
+                import time as _t; _t.sleep(1)
     return False
 
 # 内存缓存（避免每次请求都读GitHub）
@@ -765,487 +780,206 @@ tr:hover{background:rgba(124,77,255,.1)}
 
 <script>
 var allData=[], filteredData=[], currentPage=1, pageSize=30;
-var adminMap=null, mapMarkers=[];
+var adminMap=null, mapMarkers=[], isLoading=false;
 var trendChart=null, countryChart=null, ispChart=null;
 
-function getCookie(n){
-  var m=document.cookie.match(new RegExp('(^| )'+n+'=([^;]+)'));
-  return m?m[2]:'';
-}
-function setCookie(n,v){
-  document.cookie=n+'='+v+'; path=/; max-age=86400';
-}
-function delCookie(n){
-  document.cookie=n+'=; path=/; max-age=0';
-}
+function getCookie(n){try{var m=document.cookie.match(new RegExp('(^| )'+n+'=([^;]+)'));return m?m[2]:'';}catch(e){return '';}}
+function setCookie(n,v){try{document.cookie=n+'='+v+'; path=/; max-age=86400; SameSite=Lax';}catch(e){}}
+function delCookie(n){try{document.cookie=n+'=; path=/; max-age=0; SameSite=Lax';}catch(e){}}
 
 function doLogin(){
-  var pwd=document.getElementById('pwdInput').value.trim();
-  var err=document.getElementById('loginError');
-  if(!pwd){err.textContent='Enter password';err.style.display='block';return;}
-  err.style.display='none';
-  
+  var pwdEl=document.getElementById('pwdInput');
+  var errEl=document.getElementById('loginError');
+  var btnEl=document.querySelector('.login-box button');
+  if(!pwdEl||!errEl)return;
+  var pwd=pwdEl.value.trim();
+  if(!pwd){errEl.textContent='请输入密码';errEl.style.display='block';return;}
+  errEl.style.display='none';
+  if(btnEl){btnEl.disabled=true;btnEl.textContent='登录中...';}
   fetch('/api/admin/login',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
+    method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({password:pwd})
   })
-  .then(function(r){return r.json()})
+  .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
   .then(function(d){
-    if(d.token){
-      setCookie('ip_detect_admin',d.token);
-      showAdmin();
-    }else{
-      err.textContent='Login failed';
-      err.style.display='block';
-    }
+    if(btnEl){btnEl.disabled=false;btnEl.textContent='Login';}
+    if(d.token){setCookie('ip_detect_admin',d.token);showAdmin();}
+    else{errEl.textContent=d.message||'登录失败';errEl.style.display='block';}
   })
   .catch(function(e){
-    err.textContent='Error: '+e.message;
-    err.style.display='block';
+    if(btnEl){btnEl.disabled=false;btnEl.textContent='Login';}
+    errEl.textContent='错误: '+e.message;errEl.style.display='block';
   });
 }
 
-function doLogout(){
-  delCookie('ip_detect_admin');
-  location.reload();
-}
+function doLogout(){delCookie('ip_detect_admin');location.reload();}
 
 function showAdmin(){
-  document.getElementById('loginPage').style.display='none';
-  document.getElementById('adminPanel').style.display='block';
-  initMap();
-  loadData();
+  var lp=document.getElementById('loginPage');
+  var ap=document.getElementById('adminPanel');
+  if(lp)lp.style.display='none';
+  if(ap)ap.style.display='block';
+  initMap();loadData();
 }
 
 function loadData(){
   var token=getCookie('ip_detect_admin');
   if(!token){doLogout();return;}
-  
-  fetch('/api/admin/visits',{
-    headers:{'Authorization':'Bearer '+token}
-  })
+  if(isLoading)return;
+  isLoading=true;
+  fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+token}})
   .then(function(r){
     if(r.status===401){doLogout();return null;}
+    if(!r.ok)throw new Error('HTTP '+r.status);
     return r.json();
   })
   .then(function(d){
+    isLoading=false;
     if(!d)return;
-    allData=d.visits||[];
-    allData.reverse();
-    buildFilters();
-    filterData();
-    updateStats();
-    updateMap();
-    updateCharts();
-  });
+    allData=(d.visits||[]).slice().reverse();
+    buildFilters();filterData();updateStats();updateMap();updateCharts();
+  })
+  .catch(function(e){isLoading=false;console.error('loadData:',e);});
 }
 
 function initMap(){
   if(adminMap)return;
-  adminMap=L.map('adminMap').setView([35,105],4);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
-    attribution:'©OSM'
-  }).addTo(adminMap);
+  var el=document.getElementById('adminMap');
+  if(!el)return;
+  try{
+    adminMap=L.map('adminMap').setView([35,105],4);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'©OSM',maxZoom:18}).addTo(adminMap);
+  }catch(e){console.error('Map:',e);}
 }
 
 function buildFilters(){
   var cs={},is={};
-  allData.forEach(function(v){
-    if(v.country)cs[v.country]=1;
-    if(v.isp)is[v.isp]=1;
-  });
-  var cSel=document.getElementById('countryFilter');
-  var iSel=document.getElementById('ispFilter');
+  allData.forEach(function(v){if(v.country)cs[v.country]=1;if(v.isp)is[v.isp]=1;});
+  var cSel=document.getElementById('countryFilter'),iSel=document.getElementById('ispFilter');
+  if(!cSel||!iSel)return;
   cSel.innerHTML='<option value="">All Countries</option>';
   iSel.innerHTML='<option value="">All ISPs</option>';
-  Object.keys(cs).sort().forEach(function(c){
-    cSel.innerHTML+='<option value="'+c+'">'+c+'</option>';
-  });
-  Object.keys(is).sort().forEach(function(i){
-    iSel.innerHTML+='<option value="'+i+'">'+i+'</option>';
-  });
+  Object.keys(cs).sort().forEach(function(c){cSel.innerHTML+='<option value="'+c+'">'+c+'</option>';});
+  Object.keys(is).sort().forEach(function(i){iSel.innerHTML+='<option value="'+i+'">'+i+'</option>';});
 }
 
 function filterData(){
-  var q=(document.getElementById('searchInput').value||'').toLowerCase();
-  var cc=document.getElementById('countryFilter').value;
-  var ic=document.getElementById('ispFilter').value;
-  
+  var qEl=document.getElementById('searchInput'),cEl=document.getElementById('countryFilter'),iEl=document.getElementById('ispFilter');
+  var q=(qEl?qEl.value:'').toLowerCase(),cc=cEl?cEl.value:'',ic=iEl?iEl.value:'';
   filteredData=allData.filter(function(v){
-    if(cc&&v.country!==cc)return false;
-    if(ic&&v.isp!==ic)return false;
-    if(q){
-      var h=(v.ip||'')+(v.city||'')+(v.country||'');
-      if(h.toLowerCase().indexOf(q)<0)return false;
-    }
+    if(cc&&v.country!==cc)return false;if(ic&&v.isp!==ic)return false;
+    if(q){var h=(v.ip||'')+(v.city||'')+(v.country||'')+(v.region||'');if(h.toLowerCase().indexOf(q)<0)return false;}
     return true;
   });
-  currentPage=1;
-  renderTable();
+  currentPage=1;renderTable();
 }
 
 function updateStats(){
-  var total=allData.length;
-  var today=new Date().toISOString().slice(0,10);
-  var todayCount=allData.filter(function(v){return v.time&&v.time.startsWith(today)}).length;
-  var unique=new Set(allData.map(function(v){return v.ip})).size;
-  var countries=new Set(allData.map(function(v){return v.country}).filter(function(c){return c&&c!=='Unknown'})).size;
+  var el=document.getElementById('statsGrid');if(!el)return;
+  var total=allData.length,today=new Date().toISOString().slice(0,10);
+  var todayC=allData.filter(function(v){return v.time&&v.time.startsWith(today)}).length;
+  var uniq=new Set(allData.map(function(v){return v.ip})).size;
+  var cntrs=new Set(allData.map(function(v){return v.country}).filter(function(c){return c&&c!=='Unknown'&&c!=='未知'})).size;
   var recent=allData.filter(function(v){return v.time&&(Date.now()-new Date(v.time).getTime())<3600000}).length;
-  var topISP=Object.entries(allData.reduce(function(a,v){if(v.isp)a[v.isp]=(a[v.isp]||0)+1;return a},{})).sort(function(a,b){return b[1]-a[1]})[0];
-  
-  document.getElementById('statsGrid').innerHTML=
-    '<div class="stat-card"><div class="stat-num">'+total+'</div><div class="stat-label">Total Visits</div></div>'+
-    '<div class="stat-card"><div class="stat-num">'+todayCount+'</div><div class="stat-label">Today</div></div>'+
-    '<div class="stat-card"><div class="stat-num">'+unique+'</div><div class="stat-label">Unique IPs</div></div>'+
-    '<div class="stat-card"><div class="stat-num">'+countries+'</div><div class="stat-label">Countries</div></div>'+
+  var topISP=Object.entries(allData.reduce(function(a,v){if(v.isp&&v.isp!=='Unknown'&&v.isp!=='未知')a[v.isp]=(a[v.isp]||0)+1;return a;},{})).sort(function(a,b){return b[1]-a[1]})[0];
+  el.innerHTML=
+    '<div class="stat-card"><div class="stat-num">'+total+'</div><div class="stat-label">Total</div></div>'+
+    '<div class="stat-card"><div class="stat-num">'+todayC+'</div><div class="stat-label">Today</div></div>'+
+    '<div class="stat-card"><div class="stat-num">'+uniq+'</div><div class="stat-label">Unique IPs</div></div>'+
+    '<div class="stat-card"><div class="stat-num">'+cntrs+'</div><div class="stat-label">Countries</div></div>'+
     '<div class="stat-card"><div class="stat-num">'+recent+'</div><div class="stat-label">Last Hour</div></div>'+
     '<div class="stat-card"><div class="stat-num">'+(topISP?topISP[0].substring(0,15):'-')+'</div><div class="stat-label">Top ISP</div></div>';
 }
 
 function renderTable(){
-  var tbody=document.getElementById('tableBody');
-  var total=filteredData.length;
-  var pages=Math.ceil(total/pageSize)||1;
+  var tbody=document.getElementById('tableBody');if(!tbody)return;
+  var total=filteredData.length,pages=Math.ceil(total/pageSize)||1;
   if(currentPage>pages)currentPage=pages;
-  var start=(currentPage-1)*pageSize;
-  var data=filteredData.slice(start,start+pageSize);
-  
+  var start=(currentPage-1)*pageSize,data=filteredData.slice(start,start+pageSize);
   tbody.innerHTML=data.map(function(v,i){
-    var flag=codeToFlag(v.country_code)||'🌐';
-    var t=v.time?new Date(v.time).toLocaleString():'-';
-    return '<tr>'+
-      '<td>'+(start+i+1)+'</td>'+
-      '<td>'+v.ip+'</td>'+
-      '<td><span class="flag">'+flag+'</span>'+v.country+'</td>'+
-      '<td>'+(v.city||'-')+'</td>'+
-      '<td>'+(v.isp||'-').substring(0,20)+'</td>'+
-      '<td style="font-size:12px">'+t+'</td>'+
-      '<td>'+
-        '<button class="btn-sm btn-view" onclick="showDetail('+start+i+')">View</button>'+
-        '<button class="btn-sm btn-del" onclick="deleteRow('+start+i+')">×</button>'+
-      '</td></tr>';
+    var flag=codeToFlag(v.country_code)||'🌐',t=v.time?new Date(v.time).toLocaleString():'-';
+    return '<tr><td>'+(start+i+1)+'</td><td>'+v.ip+'</td><td><span class="flag">'+flag+'</span>'+v.country+'</td><td>'+(v.city||'-')+'</td><td>'+(v.isp||'-').substring(0,20)+'</td><td style="font-size:12px">'+t+'</td><td><button class="btn-sm btn-view" onclick="showDetail('+(start+i)+')">View</button><button class="btn-sm btn-del" onclick="deleteRow('+(start+i)+')">×</button></td></tr>';
   }).join('');
-  
-  var pag=document.getElementById('pagination');
-  var phtml='<button onclick="goPage('+(currentPage-1)+')" '+(currentPage===1?'disabled':'')+'> Prev</button>';
-  var sp=Math.max(1,currentPage-4), ep=Math.min(pages,currentPage+4);
-  for(var p=sp;p<=ep;p++)phtml+='<button class="'+(p===currentPage?'active':'')+'" onclick="goPage('+p+')">'+p+'</button>';
-  phtml+='<button onclick="goPage('+(currentPage+1)+')" '+(currentPage===pages?'disabled':'')+'>Next</button>';
-  pag.innerHTML=phtml;
+  var pag=document.getElementById('pagination');if(!pag)return;
+  var ph='<button onclick="goPage('+(currentPage-1)+')" '+(currentPage===1?'disabled':'')+'>Prev</button>';
+  var sp=Math.max(1,currentPage-4),ep=Math.min(pages,currentPage+4);
+  for(var p=sp;p<=ep;p++)ph+='<button class="'+(p===currentPage?'active':'')+'" onclick="goPage('+p+')">'+p+'</button>';
+  ph+='<button onclick="goPage('+(currentPage+1)+')" '+(currentPage===pages?'disabled':'')+'>Next</button>';
+  pag.innerHTML=ph;
 }
 
 function goPage(p){currentPage=p;renderTable();}
-
-function codeToFlag(cc){
-  if(!cc||cc.length!==2)return'';
-  var offset=127397;
-  return String.fromCodePoint(cc.charCodeAt(0)+offset)+String.fromCodePoint(cc.charCodeAt(1)+offset);
-}
+function codeToFlag(cc){if(!cc||cc.length!==2)return'';try{var o=127397;return String.fromCodePoint(cc.charCodeAt(0)+o)+String.fromCodePoint(cc.charCodeAt(1)+o);}catch(e){return'';}}
 
 function showDetail(idx){
-  var v=filteredData[idx];
-  if(!v)return;
-  document.getElementById('detailTitle').textContent=v.ip;
-  document.getElementById('detailInfo').innerHTML=
-    '<p><b>Country:</b> '+codeToFlag(v.country_code)+' '+v.country+'</p>'+
-    '<p><b>City:</b> '+(v.city||'-')+'</p>'+
-    '<p><b>Region:</b> '+(v.region||'-')+'</p>'+
-    '<p><b>ISP:</b> '+(v.isp||'-')+'</p>'+
-    '<p><b>AS:</b> '+(v.as||'-')+'</p>'+
-    '<p><b>Time:</b> '+(v.time?new Date(v.time).toLocaleString():'-')+'</p>'+
-    '<p><b>Lat/Lon:</b> '+(v.latitude||0)+', '+(v.longitude||0)+'</p>'+
-    '<p><b>User Agent:</b> '+(v.user_agent||'-')+'</p>';
-  document.getElementById('detailModal').style.display='flex';
+  var v=filteredData[idx];if(!v)return;
+  var tEl=document.getElementById('detailTitle'),iEl=document.getElementById('detailInfo');
+  if(tEl)tEl.textContent=v.ip;
+  if(iEl)iEl.innerHTML='<p><b>Country:</b> '+codeToFlag(v.country_code)+' '+(v.country||'-')+'</p><p><b>City:</b> '+(v.city||'-')+'</p><p><b>Region:</b> '+(v.region||'-')+'</p><p><b>ISP:</b> '+(v.isp||'-')+'</p><p><b>AS:</b> '+(v.as||'-')+'</p><p><b>Time:</b> '+(v.time?new Date(v.time).toLocaleString():'-')+'</p><p><b>Lat/Lon:</b> '+(v.latitude||0)+', '+(v.longitude||0)+'</p><p><b>User Agent:</b> '+(v.user_agent||'-')+'</p>';
+  var mEl=document.getElementById('detailModal');if(mEl)mEl.style.display='flex';
 }
-
-function closeDetail(){
-  document.getElementById('detailModal').style.display='none';
-}
+function closeDetail(){var m=document.getElementById('detailModal');if(m)m.style.display='none';}
 
 function deleteRow(idx){
   if(!confirm('Delete this record?'))return;
-  var v=filteredData[idx];
-  if(!v)return;
+  var v=filteredData[idx];if(!v)return;
   var token=getCookie('ip_detect_admin');
-  fetch('/api/admin/visits/'+encodeURIComponent(v.ip),{
-    method:'DELETE',
-    headers:{'Authorization':'Bearer '+token}
-  }).then(function(r){
-    if(r.ok)loadData();
-    else alert('Delete failed');
-  });
+  fetch('/api/admin/visits/'+encodeURIComponent(v.ip),{method:'DELETE',headers:{'Authorization':'Bearer '+token}})
+  .then(function(r){if(r.ok)loadData();else alert('Delete failed');}).catch(function(){alert('Network error');});
 }
 
-function showConfirm(){
-  document.getElementById('confirmModal').style.display='flex';
-}
-
-function closeConfirm(){
-  document.getElementById('confirmModal').style.display='none';
-}
-
+function showConfirm(){var m=document.getElementById('confirmModal');if(m)m.style.display='flex';}
+function closeConfirm(){var m=document.getElementById('confirmModal');if(m)m.style.display='none';}
 function doClear(){
   var token=getCookie('ip_detect_admin');
-  fetch('/api/admin/visits',{
-    method:'DELETE',
-    headers:{'Authorization':'Bearer '+token}
-  }).then(function(r){
-    closeConfirm();
-    if(r.ok)loadData();
-    else alert('Clear failed');
-  });
+  fetch('/api/admin/visits',{method:'DELETE',headers:{'Authorization':'Bearer '+token}})
+  .then(function(r){closeConfirm();if(r.ok)loadData();else alert('Clear failed');})
+  .catch(function(){closeConfirm();alert('Network error');});
 }
 
 function updateMap(){
   if(!adminMap)return;
-  mapMarkers.forEach(function(m){adminMap.removeLayer(m)});
+  mapMarkers.forEach(function(m){try{adminMap.removeLayer(m);}catch(e){}});
   mapMarkers=[];
   var seen={};
   allData.forEach(function(v){
-    if(seen[v.ip])return;
-    seen[v.ip]=1;
-    var lat=v.latitude||0, lon=v.longitude||0;
-    if(!lat&&!lon)return;
-    var flag=codeToFlag(v.country_code)||'🌐';
-    var marker=L.circleMarker([lat,lon],{radius:5,fillColor:'#7c4dff',color:'#448aff',weight:1,opacity:.8,fillOpacity:.6});
-    marker.bindPopup('<b>'+flag+' '+(v.city||'Unknown')+'</b><br>IP: '+v.ip+'<br>ISP: '+(v.isp||'-'));
-    marker.addTo(adminMap);
-    mapMarkers.push(marker);
+    if(seen[v.ip])return;seen[v.ip]=1;
+    var lat=v.latitude||0,lon=v.longitude||0;if(!lat&&!lon)return;
+    try{
+      var flag=codeToFlag(v.country_code)||'🌐';
+      var marker=L.circleMarker([lat,lon],{radius:5,fillColor:'#7c4dff',color:'#448aff',weight:1,opacity:.8,fillOpacity:.6});
+      marker.bindPopup('<b>'+flag+' '+(v.city||'?')+'</b><br>IP: '+v.ip+'<br>ISP: '+(v.isp||'-'));
+      marker.addTo(adminMap);mapMarkers.push(marker);
+    }catch(e){}
   });
+  try{adminMap.invalidateSize();}catch(e){}
 }
 
 function updateCharts(){
-  // Trend
-  var days={};
-  for(var i=6;i>=0;i--){
-    var d=new Date(Date.now()-i*86400000);
-    days[d.toISOString().slice(0,10)]=0;
-  }
-  allData.forEach(function(v){
-    if(v.time){
-      var day=v.time.slice(0,10);
-      if(days.hasOwnProperty(day))days[day]++;
-    }
-  });
-  var labels=Object.keys(days).map(function(d){return d.slice(5)});
-  var values=Object.values(days);
-  
-  var ctx1=document.getElementById('trendChart').getContext('2d');
-  if(trendChart)trendChart.destroy();
-  trendChart=new Chart(ctx1,{type:'line',data:{labels:labels,datasets:[{data:values,borderColor:'#7c4dff',fill:false,tension:.3}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,grid:{color:'#333'}}}}});
-  
-  // Countries
-  var cs={};
-  allData.forEach(function(v){if(v.country&&v.country!=='Unknown')cs[v.country]=(cs[v.country]||0)+1;});
-  var cSorted=Object.entries(cs).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
-  
-  var ctx2=document.getElementById('countryChart').getContext('2d');
-  if(countryChart)countryChart.destroy();
-  countryChart=new Chart(ctx2,{type:'pie',data:{labels:cSorted.map(function(x){return x[0]}),datasets:[{data:cSorted.map(function(x){return x[1]}),backgroundColor:['#7c4dff','#448aff','#ff6b6b','#2ed573','#ffa502']}]},options:{plugins:{legend:{position:'bottom'}}}});
-  
-  // ISPs
-  var is={};
-  allData.forEach(function(v){if(v.isp&&v.isp!=='Unknown')is[v.isp]=(is[v.isp]||0)+1;});
-  var iSorted=Object.entries(is).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
-  
-  var ctx3=document.getElementById('ispChart').getContext('2d');
-  if(ispChart)ispChart.destroy();
-  ispChart=new Chart(ctx3,{type:'bar',data:{labels:iSorted.map(function(x){return x[0].substring(0,15)}),datasets:[{data:iSorted.map(function(x){return x[1]}),backgroundColor:'#7c4dff'}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,grid:{color:'#333'}}}}});
+  try{
+    var days={};for(var i=6;i>=0;i--){var d=new Date(Date.now()-i*86400000);days[d.toISOString().slice(0,10)]=0;}
+    allData.forEach(function(v){if(v.time){var day=v.time.slice(0,10);if(days.hasOwnProperty(day))days[day]++;}});
+    var labels=Object.keys(days).map(function(d){return d.slice(5)}),values=Object.values(days);
+    var c1=document.getElementById('trendChart');
+    if(c1){var ctx1=c1.getContext('2d');if(trendChart)trendChart.destroy();trendChart=new Chart(ctx1,{type:'line',data:{labels:labels,datasets:[{data:values,borderColor:'#7c4dff',fill:false,tension:.3}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,grid:{color:'#333'}}}}});}
+    var cs={};allData.forEach(function(v){if(v.country&&v.country!=='Unknown'&&v.country!=='未知')cs[v.country]=(cs[v.country]||0)+1;});
+    var cS=Object.entries(cs).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
+    var c2=document.getElementById('countryChart');
+    if(c2){var ctx2=c2.getContext('2d');if(countryChart)countryChart.destroy();countryChart=new Chart(ctx2,{type:'pie',data:{labels:cS.map(function(x){return x[0]}),datasets:[{data:cS.map(function(x){return x[1]}),backgroundColor:['#7c4dff','#448aff','#ff6b6b','#2ed573','#ffa502']}]},options:{plugins:{legend:{position:'bottom'}}}});}
+    var is={};allData.forEach(function(v){if(v.isp&&v.isp!=='Unknown'&&v.isp!=='未知')is[v.isp]=(is[v.isp]||0)+1;});
+    var iS=Object.entries(is).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
+    var c3=document.getElementById('ispChart');
+    if(c3){var ctx3=c3.getContext('2d');if(ispChart)ispChart.destroy();ispChart=new Chart(ctx3,{type:'bar',data:{labels:iS.map(function(x){return x[0].substring(0,15)}),datasets:[{data:iS.map(function(x){return x[1]}),backgroundColor:'#7c4dff'}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,grid:{color:'#333'}}}}});}
+  }catch(e){console.error('Charts:',e);}
 }
 
-// Auto login on page load
 (function(){
   var t=getCookie('ip_detect_admin');
-  if(t){
-    fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+t}})
-    .then(function(r){
-      if(r.ok)showAdmin();
-      else delCookie('ip_detect_admin');
-    })
-    .catch(function(){});
-  }
+  if(t){fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+t}}).then(function(r){if(r.ok)showAdmin();else delCookie('ip_detect_admin');}).catch(function(){});}
 })();
+
+window.onerror=function(msg,url,line){console.error('[Admin]',msg,'L'+line);return true;};
 </script>
 </body>
 </html>
 """
-
-
-# ========== 路由 ==========
-
-@app.get("/", response_class=HTMLResponse)
-async def get_ip_info(request: Request):
-    ip = _get_client_ip(request)
-    location = await _fetch_location(ip)
-    ua = request.headers.get("user-agent", "")
-    referer = request.headers.get("referer", "")
-    _record_visit(ip, location, ua, referer)
-
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    country_flag = get_country_flag(location.get("country_code", ""))
-    lat = location.get("latitude", 0)
-    lon = location.get("longitude", 0)
-    try:
-        d = 0.05
-        lat_f, lon_f = float(lat), float(lon)
-        map_bbox = f"{lon_f-d},{lat_f-d},{lon_f+d},{lat_f+d}"
-    except (ValueError, TypeError):
-        map_bbox = "112.5,37.8,112.6,37.9"
-
-    json_data = {"ip": ip, "location": location or None, "error": None}
-    json_str = json.dumps(json_data, ensure_ascii=False, indent=2)
-    json_raw = json.dumps(json_data, ensure_ascii=False)
-
-    html = HTML_TEMPLATE
-    for old, new in [
-        ("__IP__", ip), ("__TIMESTAMP__", timestamp),
-        ("__COUNTRY_FLAG__", country_flag),
-        ("__COUNTRY__", location.get("country", "未知")),
-        ("__COUNTRY_CODE__", location.get("country_code", "未知")),
-        ("__CITY__", location.get("city", "未知")),
-        ("__REGION__", location.get("region_name", "未知")),
-        ("__REGION_NAME__", location.get("region_name", "未知")),
-        ("__LAT__", str(lat)), ("__LON__", str(lon)),
-        ("__TIMEZONE__", location.get("timezone", "未知")),
-        ("__ISP__", location.get("isp", "未知")),
-        ("__AS__", location.get("as", "未知")),
-        ("__ZIP__", location.get("zip", "未知")),
-        ("__MAP_BBOX__", map_bbox),
-        ("__JSON_DATA__", json_str.replace("<", "&lt;").replace(">", "&gt;")),
-        ("__JSON_RAW__", json_raw),
-    ]:
-        html = html.replace(old, new)
-    return HTMLResponse(content=html)
-
-
-@app.get("/api/info")
-async def get_info_api(request: Request):
-    ip = _get_client_ip(request)
-    location = await _fetch_location(ip)
-    return {"ip": ip, "location": location or None, "error": None}
-
-
-@app.get("/api/query")
-async def query_ip(ip: str = Query(...)):
-    parts = ip.strip().split(".")
-    if len(parts) != 4:
-        return {"error": "IP格式错误", "ip": ip, "location": None}
-    try:
-        for p in parts:
-            if not 0 <= int(p) <= 255:
-                return {"error": "IP格式错误", "ip": ip, "location": None}
-    except ValueError:
-        return {"error": "IP格式错误", "ip": ip, "location": None}
-    location = await _fetch_location(ip)
-    if not location:
-        return {"error": "查询失败", "ip": ip, "location": None}
-    return {"ip": ip, "location": location, "error": None}
-
-
-@app.get("/api/stats")
-async def get_stats():
-    visits = _load_visits()
-    today = datetime.now().strftime("%Y-%m-%d")
-    now = datetime.now()
-    ips, countries, recent1h = {}, {}, 0
-    for v in visits:
-        ips[v.get("ip", "")] = 1
-        cc = v.get("country_code", "")
-        if cc: countries[cc] = countries.get(cc, 0) + 1
-        if v.get("time"):
-            try:
-                t = datetime.strptime(v["time"], "%Y-%m-%d %H:%M:%S")
-                if (now - t).total_seconds() < 3600:
-                    recent1h += 1
-            except Exception:
-                pass
-    return {
-        "total": len(visits),
-        "today": sum(1 for v in visits if v.get("time", "").startswith(today)),
-        "unique_ips": len(ips),
-        "unique_countries": len(countries),
-        "recent_1h": recent1h,
-    }
-
-
-@app.get("/health")
-async def health_check():
-    return {"status": "ok"}
-
-
-# ========== 管理员API ==========
-
-def _verify_admin(request: Request) -> bool:
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        token = auth[7:]
-        try:
-            decoded = base64.b64decode(token).decode("utf-8")
-            return decoded == ADMIN_PASSWORD
-        except Exception:
-            return False
-    return False
-
-
-@app.post("/api/admin/login")
-async def admin_login(request: Request):
-    try:
-        body = await request.json()
-        pwd = body.get("password", "")
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid request")
-    if pwd != ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="密码错误")
-    token = base64.b64encode(pwd.encode("utf-8")).decode("utf-8")
-    return {"token": token, "message": "登录成功"}
-
-
-@app.get("/api/admin/visits")
-async def admin_get_visits(request: Request):
-    if not _verify_admin(request):
-        raise HTTPException(status_code=401, detail="未授权")
-    visits = _load_visits()
-    return {"visits": visits, "total": len(visits)}
-
-
-@app.delete("/api/admin/visits/{ip}")
-async def admin_delete_visit(ip: str, request: Request):
-    """删除指定IP的访问记录（删除最近一条）"""
-    if not _verify_admin(request):
-        raise HTTPException(status_code=401, detail="未授权")
-    visits = _load_visits()
-    for i in range(len(visits)-1, -1, -1):
-        if visits[i].get("ip") == ip:
-            visits.pop(i)
-            _save_visits(visits, force=True)
-            return {"message": "已删除", "ip": ip}
-    raise HTTPException(status_code=404, detail="未找到记录")
-
-
-@app.post("/api/admin/clear")
-async def admin_clear_visits(request: Request):
-    if not _verify_admin(request):
-        raise HTTPException(status_code=401, detail="未授权")
-    _save_visits([], force=True)
-    return {"message": "已清空"}
-
-
-@app.get("/admin", response_class=HTMLResponse)
-async def admin_page():
-    return HTMLResponse(content=ADMIN_HTML)
-
-
-@app.get("/manifest.json")
-async def manifest():
-    return JSONResponse({
-        "name": "IP位置检测", "short_name": "IP定位", "start_url": "/",
-        "display": "standalone", "background_color": "#0a0e27", "theme_color": "#7c4dff",
-        "icons": [{"src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌍</text></svg>", "sizes": "any", "type": "image/svg+xml"}]
-    })
-
-
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
