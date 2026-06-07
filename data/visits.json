@@ -868,5 +868,20 @@
     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "referer": "",
     "time": "2026-06-07 09:14:58"
+  },
+  {
+    "ip": "34.168.49.152",
+    "country": "美国",
+    "country_code": "US",
+    "city": "The Dalles",
+    "region": "俄勒冈州",
+    "latitude": 45.5945,
+    "longitude": -121.1786,
+    "timezone": "America/Los_Angeles",
+    "isp": "Google LLC",
+    "as": "AS396982 Google LLC",
+    "user_agent": "Go-http-client/2.0",
+    "referer": "",
+    "time": "2026-06-07 09:18:33"
   }
 ]
