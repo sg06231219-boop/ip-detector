@@ -916,6 +916,11 @@ function exportCSV(){
   if(t){
     fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+t}})
     .then(function(r){if(r.ok)enterAdmin();else dk('ip_detect_admin');})
+    .catch(function(){
+  var t=ck('ip_detect_admin');
+  if(t){
+    fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+t}})
+    .then(function(r){if(r.ok)enterAdmin();else dk('ip_detect_admin');})
     .catch(function(){});
   }
 })();
@@ -1032,7 +1037,7 @@ async def get_stats():
 
 @app.get("/api/version")
 async def get_version():
-    return {"version": "9.2.1", "name": "IP Detector"}
+    return {"version": "9.3.0", "name": "IP Detector"}
 
 
 
