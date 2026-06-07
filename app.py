@@ -764,7 +764,11 @@ function doLogin(){
   e.style.display="none";b.disabled=true;b.textContent="Logging in...";
   fetch("/api/admin/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:pw})})
   .then(function(r){return r.json();})
-  .then(function(d){b.disabled=false;b.textContent="Login";if(d.token){sk("ip_detect_admin",d.token);enterAdmin();}else{e.textContent=d.message||"Login failed";e.style.display="block";}})
+  .then(function(d){
+    b.disabled=false;b.textContent="Login";
+    if(d.token){sk("ip_detect_admin",d.token);enterAdmin();}
+    else{e.textContent=d.message||"Login failed";e.style.display="block";}
+  })
   .catch(function(x){b.disabled=false;b.textContent="Login";e.textContent="Error: "+x.message;e.style.display="block";});
 }
 function doLogout(){dk("ip_detect_admin");location.reload();}
@@ -837,6 +841,7 @@ document.getElementById("pwdInput").addEventListener("keydown",function(ev){if(e
 </script>
 </body>
 </html>"""
+
 
 
 
@@ -948,7 +953,7 @@ async def get_stats():
 
 @app.get("/api/version")
 async def get_version():
-    return {"version": "9.3.0", "name": "IP Detector"}
+    return {"version": "9.4.0", "name": "IP Detector"}
 
 
 
