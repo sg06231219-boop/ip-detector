@@ -426,10 +426,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
     
     .live-visitors{margin-top:16px;display:flex;justify-content:center;gap:12px;flex-wrap:wrap}
-    .lv-item{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:10px 16px;display:flex;align-items:center;gap:8px;font-size:13px;animation:fadeInUp .4s ease-out both}
-    .lv-flag{font-size:20px}.lv-info{line-height:1.3}.lv-ip{color:var(--accent3);font-family:'Courier New',monospace;font-weight:600;font-size:12px}
-    .lv-loc{color:var(--text-muted);font-size:11px}.lv-time{color:var(--text-muted);font-size:10px}
-    .lv-live{width:6px;height:6px;border-radius:50%;background:var(--success);animation:pulse 2s infinite;margin-left:auto}
+    .live-visitors-section{margin:20px 0;animation:fadeInUp .6s ease-out .25s both}
+    .lv-header{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:var(--text-secondary);margin-bottom:12px}
+    .lv-dot{width:8px;height:8px;border-radius:50%;background:var(--success);animation:pulse 2s infinite}
+    .lv-list{display:flex;gap:10px;overflow-x:auto;padding-bottom:8px;scrollbar-width:thin}
+    .lv-card{background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:12px 16px;min-width:180px;flex-shrink:0;transition:all .3s;cursor:default}
+    .lv-card:hover{border-color:rgba(124,77,255,.4);transform:translateY(-2px);box-shadow:0 8px 24px rgba(124,77,255,.15)}
+    .lv-card-top{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+    .lv-card .lv-flag{font-size:22px}
+    .lv-card .lv-ip{color:var(--accent3);font-family:'Courier New',monospace;font-weight:700;font-size:13px}
+    .lv-card .lv-loc{color:var(--text-secondary);font-size:12px}
+    .lv-card .lv-time{color:var(--text-muted);font-size:11px;margin-top:4px}
+    .lv-card .lv-live{width:6px;height:6px;border-radius:50%;background:var(--success);animation:pulse 2s infinite;margin-left:auto}
 </style>
 </head>
 <body>
@@ -443,11 +451,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <h1>🌍 IP 智能定位</h1>
             <p>实时检测您的网络身份与地理位置</p>
             <div class="social-proof">已有 <span id="totalUsers">-</span> 人使用</div>
-        <div id="liveVisitors" class="live-visitors"></div>
             <div class="status-badge">
                 <span class="status-dot"></span>
                 检测完成 · __TIMESTAMP__
             </div>
+        </div>
+        <div id="liveVisitors" class="live-visitors-section">
+            <div class="lv-header"><span class="lv-dot"></span> 实时访客动态</div>
+            <div id="lvList" class="lv-list"></div>
         </div>
         <div class="query-section">
             <div class="query-box">
@@ -639,11 +650,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     // Live visitors on homepage
     function loadLive(){
       fetch('/api/stats').then(function(r){return r.json();}).then(function(d){
-        var el=document.getElementById('liveVisitors');if(!el||!d.recent||!d.recent.length)return;
-        el.innerHTML=d.recent.slice(0,6).map(function(v){
+        var el=document.getElementById('lvList');if(!el||!d.recent||!d.recent.length){var sec=document.getElementById('liveVisitors');if(sec)sec.style.display='none';return;}
+        var sec=document.getElementById('liveVisitors');if(sec)sec.style.display='';
+        el.innerHTML=d.recent.slice(0,8).reverse().map(function(v){
           var fl='';try{if(v.country_code&&v.country_code.length===2){var o=127397;fl=String.fromCodePoint(v.country_code.charCodeAt(0)+o)+String.fromCodePoint(v.country_code.charCodeAt(1)+o);}}catch(e){}
           var ago=Math.round((Date.now()-new Date(v.time).getTime())/60000);
-          return '<div class="lv-item"><span class="lv-flag">'+(fl||'🌐')+'</span><div class="lv-info"><div class="lv-ip">'+v.ip+'</div><div class="lv-loc">'+(v.city||'?')+', '+(v.country||'?')+'</div><div class="lv-time">'+(ago<1?'just now':ago+'m ago')+'</div></div><span class="lv-live"></span></div>';
+          return '<div class="lv-card"><div class="lv-card-top"><span class="lv-flag">'+(fl||'🌐')+'</span><span class="lv-ip">'+v.ip+'</span><span class="lv-live"></span></div><div class="lv-loc">'+(v.city||'?')+', '+(v.country||'?')+'</div><div class="lv-time">'+(ago<1?'刚刚':ago+'分钟前')+'</div></div>';
         }).join('');
       }).catch(function(){});
     }
@@ -724,6 +736,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
     <h2>📊 IP Access Dashboard</h2>
     <div class="header-btns">
       <button class="btn" onclick="loadData()">🔄 Refresh</button>
+      <button class="btn" onclick="exportCSV()">📥 CSV</button>
       <button class="btn btn-danger" onclick="confirmClear()">🗑️ Clear All</button>
       <button class="btn btn-danger" onclick="doLogout()">Logout</button>
     </div>
@@ -810,7 +823,7 @@ function updateRealtime(){
   var m5=ALL.filter(function(v){return v.time&&(now-new Date(v.time).getTime())<300000}).length;
   var last=ALL[0];
   var el=document.getElementById('realtimeText');
-  if(el)el.textContent='Last hour: '+h1+' visits | Last 5min: '+m5+(last?' | Latest: '+last.ip+' from '+(last.city||'?')+' at '+last.time:'');
+  if(el)el.textContent='1h: '+h1+' | 5m: '+m5+(last?' | Latest: '+flag(last.country_code)+' '+last.ip+' '+(last.city||'?'):'');
 }
 
 function renderStats(){
@@ -873,7 +886,7 @@ function showDetail(idx){
 function delRow(idx){
   if(!confirm('Delete this record?'))return;var v=FILTERED[idx];if(!v)return;
   var t=ck('ip_detect_admin');
-  fetch('/api/admin/visits/'+encodeURIComponent(v.ip),{method:'DELETE',headers:{'Authorization':'Bearer '+t}})
+  fetch('/api/admin/visits/index/'+(ALL.length-1-(FILTERED.indexOf(v))+''),{method:'DELETE',headers:{'Authorization':'Bearer '+t}})
   .then(function(r){if(r.ok)loadData();else alert('Delete failed');}).catch(function(){alert('Network error');});
 }
 
@@ -882,6 +895,15 @@ function doClear(){
   var t=ck('ip_detect_admin');
   fetch('/api/admin/visits',{method:'DELETE',headers:{'Authorization':'Bearer '+t}})
   .then(function(r){var m=document.getElementById('confirmModal');if(m)m.style.display='none';if(r.ok)loadData();else alert('Clear failed');}).catch(function(){alert('Network error');});
+}
+
+
+function exportCSV(){
+  if(!ALL.length){alert('No data');return;}
+  var h='IP,Country,City,ISP,Time,Latitude,Longitude\n';
+  var rows=ALL.map(function(v){return [v.ip||'',v.country||'',v.city||'',v.isp||'',v.time||'',v.latitude||'',v.longitude||''].map(function(c){return '"'+String(c).replace(/"/g,'""')+'"';}).join(',');});
+  var blob=new Blob([h+rows.join('\n')],{type:'text/csv;charset=utf-8;'});
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ip-visits-'+new Date().toISOString().slice(0,10)+'.csv';a.click();
 }
 
 (function(){
@@ -999,12 +1021,13 @@ async def get_stats():
         "unique_ips": len(ips),
         "unique_countries": len(countries),
         "recent_1h": recent1h,
+        "recent": [v for v in visits if v.get("time") and (now - datetime.strptime(v["time"], "%Y-%m-%d %H:%M:%S")).total_seconds() < 3600][-10:],
     }
 
 
 @app.get("/api/version")
 async def get_version():
-    return {"version": "9.0.0", "name": "IP Detector"}
+    return {"version": "9.1.0", "name": "IP Detector"}
 
 
 
@@ -1094,6 +1117,21 @@ async def admin_clear_all_visits(request: Request):
     _save_visits([], force=True)
     return {"message": "已清空"}
 
+
+
+
+@app.delete("/api/admin/visits/index/{idx}")
+async def admin_delete_by_index(idx: int, request: Request):
+    if not _verify_admin(request):
+        raise HTTPException(status_code=401, detail="未授权")
+    visits = _load_visits()
+    # idx is from the reversed list, convert to actual index
+    actual_idx = len(visits) - 1 - idx
+    if 0 <= actual_idx < len(visits):
+        visits.pop(actual_idx)
+        _save_visits(visits, force=True)
+        return {"message": "已删除"}
+    raise HTTPException(status_code=404, detail="未找到记录")
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page():
