@@ -20,6 +20,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # ========== 配置 ==========
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Lys13579")
 GITHUB_PAT = os.environ.get("GITHUB_PAT", "")
