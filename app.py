@@ -1,4 +1,4 @@
-﻿from fastapi import FastAPI, Request, Response, HTTPException, Query
+from fastapi import FastAPI, Request, Response, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 import httpx
 import os
@@ -1070,7 +1070,6 @@ function updateCharts(){
 </body>
 </html>
 """
-﻿
 
 
 # ========== 路由 ==========
