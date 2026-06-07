@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, Response, HTTPException, Query
+﻿from fastapi import FastAPI, Request, Response, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 import httpx
 import os
@@ -644,425 +644,432 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 ADMIN_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>管理后台 - IP位置检测</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔒</text></svg>">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-    <style>
-        :root {
-            --bg-primary: #0a0e27; --bg-secondary: #111640; --bg-card: rgba(255,255,255,0.04);
-            --bg-card-hover: rgba(255,255,255,0.08); --text-primary: #e8eaf6; --text-secondary: #9fa8da;
-            --text-muted: #5c6bc0; --accent: #7c4dff; --accent2: #448aff; --accent3: #18ffff;
-            --border: rgba(124,77,255,0.2); --success: #69f0ae; --danger: #ff5252; --warning: #ffd740;
-        }
-        * { margin:0; padding:0; box-sizing:border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-primary); color: var(--text-primary); min-height: 100vh; }
-        .login-wrap { display:flex; justify-content:center; align-items:center; min-height:100vh; padding:20px; }
-        .login-box { background:var(--bg-secondary); border:1px solid var(--border); border-radius:20px; padding:40px; max-width:400px; width:100%; text-align:center; }
-        .login-box h2 { color:var(--accent3); margin-bottom:8px; font-size:24px; }
-        .login-box p { color:var(--text-muted); font-size:13px; margin-bottom:24px; }
-        .login-box input { width:100%; padding:14px 16px; border-radius:12px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:15px; margin-bottom:16px; outline:none; transition:border-color 0.3s; }
-        .login-box input:focus { border-color:var(--accent); }
-        .login-box button { width:100%; padding:14px; border-radius:12px; border:none; background:linear-gradient(135deg,var(--accent),var(--accent2)); color:white; font-size:15px; font-weight:600; cursor:pointer; transition:transform 0.2s,box-shadow 0.2s; }
-        .login-box button:hover { transform:translateY(-2px); box-shadow:0 8px 24px rgba(124,77,255,0.3); }
-        .login-error { color:var(--danger); font-size:13px; margin-top:12px; display:none; }
-        .admin-wrap { max-width:1400px; margin:0 auto; padding:20px; }
-        .admin-header { display:flex; justify-content:space-between; align-items:center; padding:20px 0; border-bottom:1px solid var(--border); margin-bottom:24px; flex-wrap:wrap; gap:12px; }
-        .admin-header h1 { font-size:22px; background:linear-gradient(135deg,var(--accent),var(--accent3)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
-        .admin-header .actions { display:flex; gap:8px; flex-wrap:wrap; }
-        .admin-btn { padding:8px 14px; border-radius:8px; border:none; cursor:pointer; font-size:13px; font-weight:600; transition:all 0.2s; }
-        .btn-logout { background:rgba(255,82,82,0.15); color:var(--danger); border:1px solid rgba(255,82,82,0.3); }
-        .btn-logout:hover { background:rgba(255,82,82,0.3); }
-        .btn-refresh { background:rgba(105,240,174,0.15); color:var(--success); border:1px solid rgba(105,240,174,0.3); }
-        .btn-refresh:hover { background:rgba(105,240,174,0.3); }
-        .btn-danger { background:rgba(255,82,82,0.15); color:var(--danger); border:1px solid rgba(255,82,82,0.3); }
-        .btn-danger:hover { background:rgba(255,82,82,0.3); }
-        .btn-export { background:rgba(24,255,255,0.15); color:var(--accent3); border:1px solid rgba(24,255,255,0.3); }
-        .btn-export:hover { background:rgba(24,255,255,0.3); }
-        .live-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--success); animation:pulse 2s infinite; margin-left:8px; }
-        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
-        .stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:20px; }
-        .stat-card { background:var(--bg-card); border:1px solid var(--border); border-radius:14px; padding:16px; text-align:center; }
-        .stat-card .stat-value { font-size:28px; font-weight:800; background:linear-gradient(135deg,var(--accent3),var(--accent2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
-        .stat-card .stat-label { color:var(--text-muted); font-size:12px; margin-top:4px; }
-        .viz-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px; }
-        .viz-card { background:var(--bg-card); border:1px solid var(--border); border-radius:14px; padding:16px; }
-        .viz-card h3 { font-size:13px; color:var(--text-secondary); margin-bottom:10px; }
-        .viz-card canvas { width:100% !important; max-height:220px; }
-        #adminMap { height:280px; border-radius:10px; }
-        .toolbar { display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap; align-items:center; }
-        .toolbar input, .toolbar select { padding:9px 13px; border-radius:9px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:13px; outline:none; }
-        .toolbar input:focus, .toolbar select:focus { border-color:var(--accent); }
-        .toolbar input { flex:1; min-width:180px; }
-        .table-wrap { background:var(--bg-card); border:1px solid var(--border); border-radius:14px; overflow:hidden; }
-        table { width:100%; border-collapse:collapse; font-size:12px; }
-        thead { background:rgba(124,77,255,0.1); }
-        th { padding:12px 10px; text-align:left; color:var(--text-muted); font-size:10px; text-transform:uppercase; letter-spacing:1px; border-bottom:1px solid var(--border); white-space:nowrap; }
-        td { padding:10px; border-bottom:1px solid rgba(124,77,255,0.06); color:var(--text-secondary); word-break:break-all; }
-        tr:hover td { background:var(--bg-card-hover); }
-        tr:last-child td { border-bottom:none; }
-        .ip-cell { font-family:'Courier New',monospace; color:var(--accent3); font-weight:600; cursor:pointer; }
-        .ip-cell:hover { text-decoration:underline; }
-        .flag-cell { font-size:16px; }
-        .time-cell { white-space:nowrap; color:var(--text-muted); font-size:11px; }
-        .ua-cell { max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; }
-        .map-link { color:var(--accent2); text-decoration:none; font-size:11px; }
-        .map-link:hover { text-decoration:underline; }
-        .detail-link { color:var(--accent); cursor:pointer; font-size:11px; }
-        .detail-link:hover { text-decoration:underline; }
-        .del-link { color:var(--danger); cursor:pointer; font-size:11px; margin-left:6px; }
-        .del-link:hover { text-decoration:underline; }
-        .pagination { display:flex; justify-content:center; align-items:center; gap:6px; padding:16px; color:var(--text-muted); font-size:13px; flex-wrap:wrap; }
-        .pagination button { padding:5px 12px; border-radius:7px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); cursor:pointer; font-size:12px; transition:all 0.2s; }
-        .pagination button:hover { border-color:var(--accent); }
-        .pagination button.active { background:var(--accent); border-color:var(--accent); color:white; }
-        .pagination button:disabled { opacity:0.3; cursor:not-allowed; }
-        .empty { text-align:center; padding:50px 20px; color:var(--text-muted); }
-        .empty .emoji { font-size:44px; margin-bottom:10px; }
-        .modal-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:200; display:flex; justify-content:center; align-items:center; }
-        .modal-box { background:var(--bg-secondary); border:1px solid var(--border); border-radius:16px; padding:24px; max-width:600px; width:95%; max-height:90vh; overflow-y:auto; }
-        .modal-box h3 { color:var(--accent3); margin-bottom:16px; font-size:18px; }
-        .modal-close { float:right; background:none; border:none; color:var(--text-muted); font-size:20px; cursor:pointer; }
-        .modal-close:hover { color:var(--text-primary); }
-        .modal-info { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-        .modal-row { background:var(--bg-card); border-radius:8px; padding:10px 12px; }
-        .modal-row .label { font-size:10px; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px; margin-bottom:4px; }
-        .modal-row .value { font-size:13px; color:var(--text-primary); word-break:break-all; }
-        .modal-map { margin-top:14px; border-radius:10px; overflow:hidden; height:200px; }
-        .modal-map iframe { width:100%; height:100%; border:none; filter:invert(0.9) hue-rotate(180deg) brightness(0.8) contrast(1.1); }
-        .confirm-modal { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:300; display:flex; justify-content:center; align-items:center; }
-        .confirm-box { background:var(--bg-secondary); border:1px solid var(--border); border-radius:14px; padding:28px; max-width:360px; width:90%; text-align:center; }
-        .confirm-box h3 { margin-bottom:10px; color:var(--danger); }
-        .confirm-box p { color:var(--text-secondary); font-size:13px; margin-bottom:20px; }
-        .confirm-box .btns { display:flex; gap:10px; justify-content:center; }
-        .confirm-box .btns button { padding:9px 22px; border-radius:8px; border:none; cursor:pointer; font-weight:600; font-size:13px; }
-        @media (max-width:900px) { .viz-grid { grid-template-columns:1fr; } .modal-info { grid-template-columns:1fr; } }
-        @media (max-width:600px) { .admin-wrap { padding:12px; } .stats-grid { grid-template-columns:repeat(2,1fr); } .modal-info { grid-template-columns:1fr; } table { font-size:10px; } th,td { padding:7px 5px; } .ua-cell { max-width:80px; } }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IP Detector Admin</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0f0f1a;--bg-secondary:#1a1a2e;--text:#e0e0e0;--border:#333357;--accent:#7c4dff;--accent-hover:#9e7aff;--danger:#ff4757;--success:#2ed573}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+.login-wrap{display:flex;justify-content:center;align-items:center;min-height:100vh;padding:20px}
+.login-box{background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;padding:40px;width:100%;max-width:400px}
+.login-box h1{text-align:center;margin-bottom:30px;font-size:24px}
+.login-box input{width:100%;padding:12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:16px;margin-bottom:15px}
+.login-box button{width:100%;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:6px;font-size:16px;cursor:pointer;transition:background .2s}
+.login-box button:hover{background:var(--accent-hover)}
+.login-box button:disabled{opacity:.6;cursor:not-allowed}
+.error{color:var(--danger);margin-top:10px;display:none}
+.admin-wrap{max-width:1400px;margin:0 auto;padding:20px}
+.admin-header{display:flex;justify-content:space-between;align-items:center;padding:20px 0;border-bottom:1px solid var(--border)}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:15px;margin:20px 0}
+.stat-card{background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:15px;text-align:center}
+.stat-num{font-size:28px;font-weight:700;color:var(--accent)}
+.stat-label{font-size:12px;color:#888;margin-top:5px}
+.chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;margin:20px 0}
+.chart-box{background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:15px}
+.chart-box h3{margin-bottom:10px;font-size:14px;color:#888}
+.filters{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0}
+.filters input,.filters select{padding:8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text)}
+table{width:100%;border-collapse:collapse;margin-top:20px}
+th,td{padding:10px;text-align:left;border-bottom:1px solid var(--border)}
+th{background:var(--bg-secondary);font-weight:600;font-size:12px;text-transform:uppercase;color:#888}
+tr:hover{background:rgba(124,77,255,.1)}
+.btn-sm{padding:5px 10px;border-radius:4px;font-size:12px;cursor:pointer;border:none;margin-right:5px}
+.btn-view{background:var(--accent);color:#fff}
+.btn-del{background:var(--danger);color:#fff}
+.btn-clear{background:var(--danger);color:#fff;padding:10px 20px;border-radius:6px}
+.btn-logout{background:#333;color:#fff}
+.pagination{display:flex;gap:5px;justify-content:center;margin:20px 0}
+.pagination button{padding:8px 12px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text);cursor:pointer;border-radius:4px}
+.pagination button.active{background:var(--accent);border-color:var(--accent)}
+.pagination button:disabled{opacity:.5;cursor:not-allowed}
+#adminPanel{display:none}
+.modal{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.8);display:none;justify-content:center;align-items:center;z-index:1000}
+.modal-content{background:var(--bg-secondary);border-radius:12px;padding:30px;max-width:600px;width:90%;max-height:90vh;overflow-y:auto}
+.modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
+.modal-close{background:none;border:none;color:#888;font-size:24px;cursor:pointer}
+#adminMap{height:300px;border-radius:8px;margin-top:20px}
+.flag{font-size:20px;margin-right:8px}
+</style>
 </head>
 <body>
-<div class="login-wrap" id="loginPage">
-    <div class="login-box">
-        <h2>🔒 管理后台</h2>
-        <p>IP位置检测工具 · 管理员登录</p>
-        <input type="password" id="pwdInput" placeholder="请输入管理员密码" onkeydown="if(event.key==='Enter')doLogin()">
-        <button onclick="doLogin()">登 录</button>
-        <div class="login-error" id="loginError">密码错误，请重试</div>
-    </div>
+
+<div id="loginPage">
+<div class="login-wrap">
+<div class="login-box">
+<h1>🔐 Admin Login</h1>
+<input type="password" id="pwdInput" placeholder="Password" onkeypress="if(event.key==='Enter')doLogin()">
+<button onclick="doLogin()">Login</button>
+<div id="loginError" class="error"></div>
 </div>
-<div class="admin-wrap" id="adminPanel" style="display:none">
-    <div class="admin-header">
-        <h1>📊 访问记录 <span class="live-dot"></span></h1>
-        <div class="actions">
-            <button class="admin-btn btn-export" onclick="exportCSV()">📥 CSV</button>
-            <button class="admin-btn btn-refresh" onclick="loadData()">🔄</button>
-            <button class="admin-btn btn-danger" onclick="showConfirm()">🗑️</button>
-            <button class="admin-btn btn-logout" onclick="doLogout()">🚪</button>
-        </div>
-    </div>
-    <div class="stats-grid" id="statsGrid">
-        <div class="stat-card"><div class="stat-value" id="sTotal">-</div><div class="stat-label">总访问</div></div>
-        <div class="stat-card"><div class="stat-value" id="sToday">-</div><div class="stat-label">今日</div></div>
-        <div class="stat-card"><div class="stat-value" id="sUnique">-</div><div class="stat-label">独立IP</div></div>
-        <div class="stat-card"><div class="stat-value" id="sCountries">-</div><div class="stat-label">国家</div></div>
-        <div class="stat-card"><div class="stat-value" id="sRecent">-</div><div class="stat-label">近1小时</div></div>
-        <div class="stat-card"><div class="stat-value" id="sTopISP">-</div><div class="stat-label">TOP ISP</div></div>
-    </div>
-    <div class="viz-grid">
-        <div class="viz-card"><h3>🗺️ 访问者位置</h3><div id="adminMap"></div></div>
-        <div class="viz-card"><h3>📈 7天趋势</h3><canvas id="trendChart"></canvas></div>
-    </div>
-    <div class="viz-grid">
-        <div class="viz-card"><h3>🌍 国家 TOP5</h3><canvas id="countryChart"></canvas></div>
-        <div class="viz-card"><h3>🌐 ISP TOP5</h3><canvas id="ispChart"></canvas></div>
-    </div>
-    <div class="toolbar">
-        <input type="text" id="searchInput" placeholder="🔍 搜索IP/城市/ISP..." oninput="filterData()">
-        <select id="countryFilter" onchange="filterData()"><option value="">全部国家</option></select>
-        <select id="ispFilter" onchange="filterData()"><option value="">全部ISP</option></select>
-    </div>
-    <div class="table-wrap">
-        <table>
-            <thead><tr>
-                <th>#</th><th>IP地址</th><th>🏳️</th><th>国家</th><th>城市</th>
-                <th>ISP</th><th>浏览器</th><th>时间</th><th>操作</th>
-            </tr></thead>
-            <tbody id="tableBody"></tbody>
-        </table>
-    </div>
-    <div class="pagination" id="pagination"></div>
 </div>
-<div class="modal-overlay" id="detailModal" style="display:none" onclick="if(event.target===this)closeDetail()">
-    <div class="modal-box">
-        <button class="modal-close" onclick="closeDetail()">×</button>
-        <h3 id="detailTitle">IP 详情</h3>
-        <div class="modal-info" id="detailInfo"></div>
-        <div class="modal-map" id="detailMap"></div>
-    </div>
 </div>
-<div class="confirm-modal" id="confirmModal" style="display:none" onclick="if(event.target===this)closeConfirm()">
-    <div class="confirm-box">
-        <h3>⚠️ 确认清空</h3>
-        <p>此操作将删除所有访问记录，不可恢复！</p>
-        <div class="btns">
-            <button style="background:var(--bg-card);color:var(--text-primary)" onclick="closeConfirm()">取消</button>
-            <button style="background:var(--danger);color:white" onclick="doClear()">确认清空</button>
-        </div>
-    </div>
+
+<div id="adminPanel">
+<div class="admin-wrap">
+<div class="admin-header">
+<h2>📊 IP Access Dashboard</h2>
+<div>
+<button class="btn-sm btn-clear" onclick="showConfirm()">🗑️ Clear All</button>
+<button class="btn-sm btn-logout" onclick="doLogout()">Logout</button>
 </div>
-<div class="confirm-modal" id="delConfirmModal" style="display:none" onclick="if(event.target===this)closeDelConfirm()">
-    <div class="confirm-box">
-        <h3>⚠️ 确认删除</h3>
-        <p id="delConfirmText">确认删除这条记录？</p>
-        <div class="btns">
-            <button style="background:var(--bg-card);color:var(--text-primary)" onclick="closeDelConfirm()">取消</button>
-            <button style="background:var(--danger);color:white" onclick="doDelete()">确认删除</button>
-        </div>
-    </div>
 </div>
+
+<div class="stats-grid" id="statsGrid"></div>
+
+<div class="chart-grid">
+<div class="chart-box"><h3>📈 7-Day Trend</h3><canvas id="trendChart"></canvas></div>
+<div class="chart-box"><h3>🌍 Top Countries</h3><canvas id="countryChart"></canvas></div>
+<div class="chart-box"><h3>🌐 Top ISPs</h3><canvas id="ispChart"></canvas></div>
+</div>
+
+<div id="adminMap"></div>
+
+<div class="filters">
+<input type="text" id="searchInput" placeholder="Search IP/city..." oninput="filterData()">
+<select id="countryFilter" onchange="filterData()"><option value="">All Countries</option></select>
+<select id="ispFilter" onchange="filterData()"><option value="">All ISPs</option></select>
+</div>
+
+<table id="dataTable">
+<thead><tr><th>#</th><th>IP</th><th>Country</th><th>City</th><th>ISP</th><th>Time</th><th>Actions</th></tr></thead>
+<tbody id="tableBody"></tbody>
+</table>
+<div class="pagination" id="pagination"></div>
+</div>
+</div>
+
+<div class="modal" id="detailModal">
+<div class="modal-content">
+<div class="modal-header">
+<h3 id="detailTitle">Details</h3>
+<button class="modal-close" onclick="closeDetail()">×</button>
+</div>
+<div id="detailInfo"></div>
+</div>
+</div>
+
+<div class="modal" id="confirmModal">
+<div class="modal-content">
+<h3>⚠️ Confirm Clear</h3>
+<p style="margin:20px 0">Delete all records?</p>
+<div style="text-align:right">
+<button class="btn-sm" style="background:#333" onclick="closeConfirm()">Cancel</button>
+<button class="btn-sm btn-del" onclick="doClear()">Delete</button>
+</div>
+</div>
+</div>
+
 <script>
-var allData=[], filteredData=[], currentPage=1, pageSize=30, cookieName='ip_detect_admin';
-var adminMap=null, mapMarkers=[], trendChart=null, countryChart=null, ispChart=null, refreshTimer=null;
-var pendingDeleteIndex = -1;
+var allData=[], filteredData=[], currentPage=1, pageSize=30;
+var adminMap=null, mapMarkers=[];
+var trendChart=null, countryChart=null, ispChart=null;
 
-function getCookie(n){var m=document.cookie.match(new RegExp('(^| )'+n+'=([^;]+)'));return m?m[2]:'';}
-function setCookie(n,v){document.cookie=n+'='+v+'; path=/; max-age=86400';}
-function delCookie(n){document.cookie=n+'=; path=/; max-age=0';}
-(function(){console.log("[DEBUG] Page load, cookie:",getCookie(cookieName));var t=getCookie(cookieName);
-    if(t){
-      fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+t}})
-      .then(function(r){
-        if(r.ok){showAdmin();}
-        else{delCookie(cookieName);}
-      })
-      .catch(function(){delCookie(cookieName);});
-    }
-  })();
-
-function doLogin(){console.log("[DEBUG] doLogin called");
-    var pwd=document.getElementById('pwdInput').value.trim();console.log('[DEBUG] pwd length:',pwd.length);
-    var errEl=document.getElementById('loginError');
-    if(!pwd){errEl.textContent='Please enter password';errEl.style.display='block';return;}
-    errEl.style.display='none';
-    var btn=document.querySelector('.login-box button');
-    if(btn){btn.disabled=true;btn.textContent='Logging in...';}
-    fetch('/api/admin/login',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({password:pwd})
-    })
-    .then(function(r){
-      if(r.ok) return r.json();
-      errEl.textContent='Login failed ('+r.status+')';
-      errEl.style.display='block';
-      if(btn){btn.disabled=false;btn.textContent='Login';}
-      throw new Error('login failed');
-    })
-    .then(function(d){
-      if(d&&d.token){
-        setCookie(cookieName,d.token);
-        showAdmin();
-      }else{
-        errEl.textContent='Invalid response';
-        errEl.style.display='block';
-      }
-      if(btn){btn.disabled=false;btn.textContent='Login';}
-    })
-    .catch(function(e){
-      if(e.message!=='login failed'){
-        errEl.textContent='Network error: '+e.message;
-        errEl.style.display='block';
-      }
-      if(btn){btn.disabled=false;btn.textContent='Login';}
-      setTimeout(function(){errEl.style.display='none';},8000);
-    });
-  }
-function doLogout(){delCookie(cookieName);document.getElementById('adminPanel').style.display='none';document.getElementById('loginPage').style.display='flex';if(refreshTimer)clearInterval(refreshTimer);}
-
-function showAdmin(){
-    console.log("[DEBUG] showAdmin START");
-    var lp=document.getElementById('loginPage');
-    var ap=document.getElementById('adminPanel');
-    console.log("[DEBUG] loginPage before:",lp.style.display,"adminPanel before:",ap.style.display);
-    lp.style.display='none';
-    ap.style.display='block';
-    console.log("[DEBUG] loginPage after:",lp.style.display,"adminPanel after:",ap.style.display);
-    try{initMap();console.log("[DEBUG] initMap OK");}catch(e){console.log("[DEBUG] initMap ERROR:",e.message);}
-    try{loadData();console.log("[DEBUG] loadData OK");}catch(e){console.log("[DEBUG] loadData ERROR:",e.message);}
-    if(refreshTimer)clearInterval(refreshTimer);
-    refreshTimer=setInterval(loadData,30000);
-    console.log("[DEBUG] showAdmin END - adminPanel display=",document.getElementById('adminPanel').style.display);
-  }
-
-function initMap(){if(adminMap)return;adminMap=L.map('adminMap',{zoomControl:true}).setView([30,110],2);L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'©OSM ©CARTO',maxZoom:18}).addTo(adminMap);}
-
-function loadData(){console.log("[DEBUG] loadData called");
-    var token=getCookie(cookieName);
-    console.log('[DEBUG] loadData fetching with token:',token);fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+token}})
-    .then(function(r){console.log('[DEBUG] visits status:',r.status);if(r.status===401){doLogout();return null;}return r.json();})
-    .then(function(d){if(!d)return;allData=d.visits||[];allData.reverse();buildFilters();filterData();updateStats();updateMap();updateCharts();});
+function getCookie(n){
+  var m=document.cookie.match(new RegExp('(^| )'+n+'=([^;]+)'));
+  return m?m[2]:'';
+}
+function setCookie(n,v){
+  document.cookie=n+'='+v+'; path=/; max-age=86400';
+}
+function delCookie(n){
+  document.cookie=n+'=; path=/; max-age=0';
 }
 
-function updateStats(){
-    document.getElementById('sTotal').textContent=allData.length;
-    var today=new Date().toISOString().slice(0,10);
-    var todayCount=allData.filter(function(v){return v.time&&v.time.startsWith(today)}).length;
-    document.getElementById('sToday').textContent=todayCount;
-    var ips={},countries={},isps={},now=Date.now(),recent1h=0;
-    allData.forEach(function(v){ips[v.ip]=(ips[v.ip]||0)+1;if(v.country_code)countries[v.country_code]=1;if(v.isp&&v.isp!=='未知')isps[v.isp]=(isps[v.isp]||0)+1;if(v.time){var t=new Date(v.time.replace(/-/g,'/')).getTime();if(now-t<3600000)recent1h++;}});
-    document.getElementById('sUnique').textContent=Object.keys(ips).length;
-    document.getElementById('sCountries').textContent=Object.keys(countries).length;
-    document.getElementById('sRecent').textContent=recent1h;
-    var topISP=Object.entries(isps).sort(function(a,b){return b[1]-a[1]})[0];
-    document.getElementById('sTopISP').textContent=topISP?(topISP[0].length>12?topISP[0].substring(0,11)+'..':topISP[0]):'-';
+function doLogin(){
+  var pwd=document.getElementById('pwdInput').value.trim();
+  var err=document.getElementById('loginError');
+  if(!pwd){err.textContent='Enter password';err.style.display='block';return;}
+  err.style.display='none';
+  
+  fetch('/api/admin/login',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({password:pwd})
+  })
+  .then(function(r){return r.json()})
+  .then(function(d){
+    if(d.success&&d.token){
+      setCookie('ip_detect_admin',d.token);
+      showAdmin();
+    }else{
+      err.textContent='Login failed';
+      err.style.display='block';
+    }
+  })
+  .catch(function(e){
+    err.textContent='Error: '+e.message;
+    err.style.display='block';
+  });
+}
+
+function doLogout(){
+  delCookie('ip_detect_admin');
+  location.reload();
+}
+
+function showAdmin(){
+  document.getElementById('loginPage').style.display='none';
+  document.getElementById('adminPanel').style.display='block';
+  initMap();
+  loadData();
+}
+
+function loadData(){
+  var token=getCookie('ip_detect_admin');
+  if(!token){doLogout();return;}
+  
+  fetch('/api/admin/visits',{
+    headers:{'Authorization':'Bearer '+token}
+  })
+  .then(function(r){
+    if(r.status===401){doLogout();return null;}
+    return r.json();
+  })
+  .then(function(d){
+    if(!d)return;
+    allData=d.visits||[];
+    allData.reverse();
+    buildFilters();
+    filterData();
+    updateStats();
+    updateMap();
+    updateCharts();
+  });
+}
+
+function initMap(){
+  if(adminMap)return;
+  adminMap=L.map('adminMap').setView([35,105],4);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    attribution:'©OSM'
+  }).addTo(adminMap);
 }
 
 function buildFilters(){
-    var cs={},isps={};
-    allData.forEach(function(v){if(v.country)cs[v.country]=v.country_code||'';if(v.isp&&v.isp!=='未知')isps[v.isp]=1;});
-    var cSel=document.getElementById('countryFilter');cSel.innerHTML='<option value="">全部国家</option>';
-    Object.keys(cs).sort().forEach(function(c){var o=document.createElement('option');o.value=cs[c];o.textContent=c;cSel.appendChild(o);});
-    var iSel=document.getElementById('ispFilter');iSel.innerHTML='<option value="">全部ISP</option>';
-    Object.keys(isps).sort().forEach(function(i){var o=document.createElement('option');o.value=i;o.textContent=i;iSel.appendChild(o);});
+  var cs={},is={};
+  allData.forEach(function(v){
+    if(v.country)cs[v.country]=1;
+    if(v.isp)is[v.isp]=1;
+  });
+  var cSel=document.getElementById('countryFilter');
+  var iSel=document.getElementById('ispFilter');
+  cSel.innerHTML='<option value="">All Countries</option>';
+  iSel.innerHTML='<option value="">All ISPs</option>';
+  Object.keys(cs).sort().forEach(function(c){
+    cSel.innerHTML+='<option value="'+c+'">'+c+'</option>';
+  });
+  Object.keys(is).sort().forEach(function(i){
+    iSel.innerHTML+='<option value="'+i+'">'+i+'</option>';
+  });
 }
 
-function codeToFlag(code){if(!code||code.length!==2)return '🏁';var offset=127397;return String.fromCodePoint(code.charCodeAt(0)+offset)+String.fromCodePoint(code.charCodeAt(1)+offset);}
-
 function filterData(){
-    var q=document.getElementById('searchInput').value.toLowerCase();
-    var cc=document.getElementById('countryFilter').value;
-    var isp=document.getElementById('ispFilter').value;
-    filteredData=allData.filter(function(v){
-        var matchQ=!q||(v.ip&&v.ip.toLowerCase().indexOf(q)>-1)||(v.city&&v.city.toLowerCase().indexOf(q)>-1)||(v.isp&&v.isp.toLowerCase().indexOf(q)>-1)||(v.country&&v.country.toLowerCase().indexOf(q)>-1);
-        return matchQ&&(!cc||v.country_code===cc)&&(!isp||v.isp===isp);
-    });
-    currentPage=1;renderTable();
+  var q=(document.getElementById('searchInput').value||'').toLowerCase();
+  var cc=document.getElementById('countryFilter').value;
+  var ic=document.getElementById('ispFilter').value;
+  
+  filteredData=allData.filter(function(v){
+    if(cc&&v.country!==cc)return false;
+    if(ic&&v.isp!==ic)return false;
+    if(q){
+      var h=(v.ip||'')+(v.city||'')+(v.country||'');
+      if(h.toLowerCase().indexOf(q)<0)return false;
+    }
+    return true;
+  });
+  currentPage=1;
+  renderTable();
+}
+
+function updateStats(){
+  var total=allData.length;
+  var today=new Date().toISOString().slice(0,10);
+  var todayCount=allData.filter(function(v){return v.time&&v.time.startsWith(today)}).length;
+  var unique=new Set(allData.map(function(v){return v.ip})).size;
+  var countries=new Set(allData.map(function(v){return v.country}).filter(function(c){return c&&c!=='Unknown'})).size;
+  var recent=allData.filter(function(v){return v.time&&(Date.now()-new Date(v.time).getTime())<3600000}).length;
+  var topISP=Object.entries(allData.reduce(function(a,v){if(v.isp)a[v.isp]=(a[v.isp]||0)+1;return a},{})).sort(function(a,b){return b[1]-a[1]})[0];
+  
+  document.getElementById('statsGrid').innerHTML=
+    '<div class="stat-card"><div class="stat-num">'+total+'</div><div class="stat-label">Total Visits</div></div>'+
+    '<div class="stat-card"><div class="stat-num">'+todayCount+'</div><div class="stat-label">Today</div></div>'+
+    '<div class="stat-card"><div class="stat-num">'+unique+'</div><div class="stat-label">Unique IPs</div></div>'+
+    '<div class="stat-card"><div class="stat-num">'+countries+'</div><div class="stat-label">Countries</div></div>'+
+    '<div class="stat-card"><div class="stat-num">'+recent+'</div><div class="stat-label">Last Hour</div></div>'+
+    '<div class="stat-card"><div class="stat-num">'+(topISP?topISP[0].substring(0,15):'-')+'</div><div class="stat-label">Top ISP</div></div>';
 }
 
 function renderTable(){
-    var tbody=document.getElementById('tableBody');
-    var total=filteredData.length;
-    var totalPages=Math.ceil(total/pageSize)||1;
-    if(currentPage>totalPages)currentPage=totalPages;
-    var start=(currentPage-1)*pageSize;
-    var end=Math.min(start+pageSize,total);
-    var pageData=filteredData.slice(start,end);
-    if(pageData.length===0){tbody.innerHTML='<tr><td colspan="9"><div class="empty"><div class="emoji">📭</div>暂无记录</div></td></tr>';}
-    else{
-        var html='';
-        pageData.forEach(function(v,i){
-            var idx=start+i+1;
-            var ua=v.user_agent||'-';
-            var shortUa=ua.length>35?(ua.indexOf('Chrome')>-1&&ua.indexOf('Edg')>-1?'Edge':ua.indexOf('Chrome')>-1?'Chrome':ua.indexOf('Firefox')>-1?'Firefox':ua.indexOf('Safari')>-1?'Safari':ua.substring(0,32)+'..'):ua;
-            html+='<tr>';
-            html+='<td>'+idx+'</td>';
-            html+='<td class="ip-cell" onclick="showDetail(\\''+v.ip+'\\')">'+v.ip+'</td>';
-            html+='<td class="flag-cell">'+codeToFlag(v.country_code)+'</td>';
-            html+='<td>'+(v.country||'-')+'</td>';
-            html+='<td>'+(v.city||'-')+(v.region&&v.region!=='未知'?'<br><span style="font-size:10px;color:var(--text-muted)">'+v.region+'</span>':'')+'</td>';
-            html+='<td style="font-size:11px">'+(v.isp||'-')+'</td>';
-            html+='<td class="ua-cell" title="'+ua.replace(/"/g,'&quot;')+'">'+shortUa+'</td>';
-            html+='<td class="time-cell">'+(v.time||'-')+'</td>';
-            html+='<td><a class="map-link" href="https://www.google.com/maps?q='+(v.latitude||0)+','+(v.longitude||0)+'" target="_blank">📍</a> <span class="detail-link" onclick="showDetail(\\''+v.ip+'\\')">详情</span><span class="del-link" onclick="showDelConfirm('+i+')">✕</span></td>';
-            html+='</tr>';
-        });
-        tbody.innerHTML=html;
-    }
-    var pagDiv=document.getElementById('pagination');
-    if(totalPages<=1){pagDiv.innerHTML='<span>共 '+total+' 条</span>';return;}
-    var phtml='<button onclick="goPage('+(currentPage-1)+')" '+(currentPage===1?'disabled':'')+'>上一页</button>';
-    var startP=Math.max(1,currentPage-4),endP=Math.min(totalPages,currentPage+4);
-    for(var p=startP;p<=endP;p++)phtml+='<button class="'+(p===currentPage?'active':'')+'" onclick="goPage('+p+')">'+p+'</button>';
-    phtml+='<button onclick="goPage('+(currentPage+1)+')" '+(currentPage===totalPages?'disabled':'')+'>下一页</button>';
-    phtml+='<span style="margin-left:10px">'+total+'条 / '+totalPages+'页</span>';
-    pagDiv.innerHTML=phtml;
+  var tbody=document.getElementById('tableBody');
+  var total=filteredData.length;
+  var pages=Math.ceil(total/pageSize)||1;
+  if(currentPage>pages)currentPage=pages;
+  var start=(currentPage-1)*pageSize;
+  var data=filteredData.slice(start,start+pageSize);
+  
+  tbody.innerHTML=data.map(function(v,i){
+    var flag=codeToFlag(v.country_code)||'🌐';
+    var t=v.time?new Date(v.time).toLocaleString():'-';
+    return '<tr>'+
+      '<td>'+(start+i+1)+'</td>'+
+      '<td>'+v.ip+'</td>'+
+      '<td><span class="flag">'+flag+'</span>'+v.country+'</td>'+
+      '<td>'+(v.city||'-')+'</td>'+
+      '<td>'+(v.isp||'-').substring(0,20)+'</td>'+
+      '<td style="font-size:12px">'+t+'</td>'+
+      '<td>'+
+        '<button class="btn-sm btn-view" onclick="showDetail('+start+i+')">View</button>'+
+        '<button class="btn-sm btn-del" onclick="deleteRow('+start+i+')">×</button>'+
+      '</td></tr>';
+  }).join('');
+  
+  var pag=document.getElementById('pagination');
+  var phtml='<button onclick="goPage('+(currentPage-1)+')" '+(currentPage===1?'disabled':'')+'> Prev</button>';
+  var sp=Math.max(1,currentPage-4), ep=Math.min(pages,currentPage+4);
+  for(var p=sp;p<=ep;p++)phtml+='<button class="'+(p===currentPage?'active':'')+'" onclick="goPage('+p+')">'+p+'</button>';
+  phtml+='<button onclick="goPage('+(currentPage+1)+')" '+(currentPage===pages?'disabled':'')+'>Next</button>';
+  pag.innerHTML=phtml;
 }
 
-function goPage(p){var totalPages=Math.ceil(filteredData.length/pageSize)||1;if(p<1||p>totalPages)return;currentPage=p;renderTable();}
+function goPage(p){currentPage=p;renderTable();}
 
-function showDetail(ip){
-    var v=allData.find(function(x){return x.ip===ip;});
-    if(!v){alert('未找到记录');return;}
-    document.getElementById('detailTitle').textContent='🌍 '+ip+' 详情';
-    var html='',fields=[['IP地址',v.ip],['国家',(v.country||'-')+' '+codeToFlag(v.country_code)],['城市',v.city||'-'],['地区',v.region||'-'],['经纬度',(v.latitude||'')+', '+(v.longitude||'')],['时区',v.timezone||'-'],['ISP',v.isp||'-'],['AS编号',v.as||'-'],['邮编',v.zip||'-'],['访问时间',v.time||'-']];
-    fields.forEach(function(f){html+='<div class="modal-row"><div class="label">'+f[0]+'</div><div class="value">'+f[1]+'</div></div>';});
-    document.getElementById('detailInfo').innerHTML=html;
-    var lat=v.latitude||0,lon=v.longitude||0;
-    var mapUrl='https://www.openstreetmap.org/export/embed.html?bbox='+(lon-0.05)+','+(lat-0.05)+','+(lon+0.05)+','+(lat+0.05)+'&layer=mapnik&marker='+lat+','+lon;
-    document.getElementById('detailMap').innerHTML='<iframe src="'+mapUrl+'" loading="lazy"></iframe>';
-    document.getElementById('detailModal').style.display='flex';
+function codeToFlag(cc){
+  if(!cc||cc.length!==2)return'';
+  var offset=127397;
+  return String.fromCodePoint(cc.charCodeAt(0)+offset)+String.fromCodePoint(cc.charCodeAt(1)+offset);
 }
-function closeDetail(){document.getElementById('detailModal').style.display='none';}
 
-function showDelConfirm(idx){pendingDeleteIndex=idx;var v=filteredData[idx];document.getElementById('delConfirmText').textContent='确认删除 '+v.ip+' 的记录？';document.getElementById('delConfirmModal').style.display='flex';}
-function closeDelConfirm(){document.getElementById('delConfirmModal').style.display='none';pendingDeleteIndex=-1;}
-function doDelete(){
-    if(pendingDeleteIndex<0)return;
-    var v=filteredData[pendingDeleteIndex];
-    var token=getCookie(cookieName);
-    fetch('/api/admin/visits/'+encodeURIComponent(v.ip),{method:'DELETE',headers:{'Authorization':'Bearer '+token}})
-    .then(function(r){if(r.status===401){doLogout();return;}closeDelConfirm();loadData();});
+function showDetail(idx){
+  var v=filteredData[idx];
+  if(!v)return;
+  document.getElementById('detailTitle').textContent=v.ip;
+  document.getElementById('detailInfo').innerHTML=
+    '<p><b>Country:</b> '+codeToFlag(v.country_code)+' '+v.country+'</p>'+
+    '<p><b>City:</b> '+(v.city||'-')+'</p>'+
+    '<p><b>Region:</b> '+(v.region||'-')+'</p>'+
+    '<p><b>ISP:</b> '+(v.isp||'-')+'</p>'+
+    '<p><b>AS:</b> '+(v.as||'-')+'</p>'+
+    '<p><b>Time:</b> '+(v.time?new Date(v.time).toLocaleString():'-')+'</p>'+
+    '<p><b>Lat/Lon:</b> '+(v.latitude||0)+', '+(v.longitude||0)+'</p>'+
+    '<p><b>User Agent:</b> '+(v.user_agent||'-')+'</p>';
+  document.getElementById('detailModal').style.display='flex';
+}
+
+function closeDetail(){
+  document.getElementById('detailModal').style.display='none';
+}
+
+function deleteRow(idx){
+  if(!confirm('Delete this record?'))return;
+  var v=filteredData[idx];
+  if(!v)return;
+  var token=getCookie('ip_detect_admin');
+  fetch('/api/admin/visits/'+encodeURIComponent(v.ip),{
+    method:'DELETE',
+    headers:{'Authorization':'Bearer '+token}
+  }).then(function(r){
+    if(r.ok)loadData();
+    else alert('Delete failed');
+  });
+}
+
+function showConfirm(){
+  document.getElementById('confirmModal').style.display='flex';
+}
+
+function closeConfirm(){
+  document.getElementById('confirmModal').style.display='none';
+}
+
+function doClear(){
+  var token=getCookie('ip_detect_admin');
+  fetch('/api/admin/visits',{
+    method:'DELETE',
+    headers:{'Authorization':'Bearer '+token}
+  }).then(function(r){
+    closeConfirm();
+    if(r.ok)loadData();
+    else alert('Clear failed');
+  });
 }
 
 function updateMap(){
-    if(!adminMap)return;mapMarkers.forEach(function(m){adminMap.removeLayer(m);});mapMarkers=[];
-    var seen={};allData.forEach(function(v){if(seen[v.ip])return;seen[v.ip]=1;var lat=parseFloat(v.latitude),lon=parseFloat(v.longitude);if(isNaN(lat)||isNaN(lon))return;var flag=codeToFlag(v.country_code);var popup='<b>'+flag+' '+(v.city||'未知')+'</b><br>IP: '+v.ip+'<br>ISP: '+(v.isp||'未知')+'<br>'+(v.time||'');var marker=L.circleMarker([lat,lon],{radius:5,fillColor:'#7c4dff',color:'#448aff',weight:1,opacity:0.8,fillOpacity:0.6}).addTo(adminMap).bindPopup(popup);mapMarkers.push(marker);});
-    if(mapMarkers.length>0)adminMap.fitBounds(mapMarkers.map(function(m){return m.getLatLng()}),{padding:[30,30],maxZoom:6});
+  if(!adminMap)return;
+  mapMarkers.forEach(function(m){adminMap.removeLayer(m)});
+  mapMarkers=[];
+  var seen={};
+  allData.forEach(function(v){
+    if(seen[v.ip])return;
+    seen[v.ip]=1;
+    var lat=v.latitude||0, lon=v.longitude||0;
+    if(!lat&&!lon)return;
+    var flag=codeToFlag(v.country_code)||'🌐';
+    var marker=L.circleMarker([lat,lon],{radius:5,fillColor:'#7c4dff',color:'#448aff',weight:1,opacity:.8,fillOpacity:.6});
+    marker.bindPopup('<b>'+flag+' '+(v.city||'Unknown')+'</b><br>IP: '+v.ip+'<br>ISP: '+(v.isp||'-'));
+    marker.addTo(adminMap);
+    mapMarkers.push(marker);
+  });
 }
 
 function updateCharts(){
-    var days={};for(var i=6;i>=0;i--){var d=new Date(Date.now()-i*86400000);days[d.toISOString().slice(0,10)]=0;}
-    allData.forEach(function(v){if(v.time){var d=v.time.substring(0,10);if(d in days)days[d]++;}});
-    var labels=Object.keys(days).map(function(d){return d.substring(5);}),values=Object.values(days);
-    var ctx1=document.getElementById('trendChart').getContext('2d');
-    if(trendChart)trendChart.destroy();
-    trendChart=new Chart(ctx1,{type:'line',data:{labels:labels,datasets:[{label:'访问量',data:values,borderColor:'#7c4dff',backgroundColor:'rgba(124,77,255,0.1)',fill:true,tension:0.4,pointBackgroundColor:'#18ffff',pointRadius:4}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#5c6bc0'},grid:{color:'rgba(124,77,255,0.08)'}},y:{ticks:{color:'#5c6bc0',stepSize:1},grid:{color:'rgba(124,77,255,0.08)'},beginAtZero:true}}}});
-    var ccs={};allData.forEach(function(v){if(v.country&&v.country!=='未知')ccs[v.country]=(ccs[v.country]||0)+1;});
-    var cSorted=Object.entries(ccs).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
-    var ctx2=document.getElementById('countryChart').getContext('2d');
-    if(countryChart)countryChart.destroy();
-    countryChart=new Chart(ctx2,{type:'doughnut',data:{labels:cSorted.map(function(x){return x[0]}),datasets:[{data:cSorted.map(function(x){return x[1]}),backgroundColor:['#7c4dff','#448aff','#18ffff','#69f0ae','#ffd740'],borderColor:'#111640',borderWidth:2}]},options:{responsive:true,plugins:{legend:{position:'bottom',labels:{color:'#9fa8da',font:{size:11}}}}}});
-    var isps={};allData.forEach(function(v){if(v.isp&&v.isp!=='未知')isps[v.isp]=(isps[v.isp]||0)+1;});
-    var iSorted=Object.entries(isps).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
-    var ctx3=document.getElementById('ispChart').getContext('2d');
-    if(ispChart)ispChart.destroy();
-    ispChart=new Chart(ctx3,{type:'doughnut',data:{labels:iSorted.map(function(x){return x[0].length>18?x[0].substring(0,16)+'..':x[0]}),datasets:[{data:iSorted.map(function(x){return x[1]}),backgroundColor:['#ff5252','#ff9100','#ffd740','#69f0ae','#18ffff'],borderColor:'#111640',borderWidth:2}]},options:{responsive:true,plugins:{legend:{position:'bottom',labels:{color:'#9fa8da',font:{size:11}}}}}});
+  // Trend
+  var days={};
+  for(var i=6;i>=0;i--){
+    var d=new Date(Date.now()-i*86400000);
+    days[d.toISOString().slice(0,10)]=0;
+  }
+  allData.forEach(function(v){
+    if(v.time){
+      var day=v.time.slice(0,10);
+      if(days.hasOwnProperty(day))days[day]++;
+    }
+  });
+  var labels=Object.keys(days).map(function(d){return d.slice(5)});
+  var values=Object.values(days);
+  
+  var ctx1=document.getElementById('trendChart').getContext('2d');
+  if(trendChart)trendChart.destroy();
+  trendChart=new Chart(ctx1,{type:'line',data:{labels:labels,datasets:[{data:values,borderColor:'#7c4dff',fill:false,tension:.3}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,grid:{color:'#333'}}}}});
+  
+  // Countries
+  var cs={};
+  allData.forEach(function(v){if(v.country&&v.country!=='Unknown')cs[v.country]=(cs[v.country]||0)+1;});
+  var cSorted=Object.entries(cs).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
+  
+  var ctx2=document.getElementById('countryChart').getContext('2d');
+  if(countryChart)countryChart.destroy();
+  countryChart=new Chart(ctx2,{type:'pie',data:{labels:cSorted.map(function(x){return x[0]}),datasets:[{data:cSorted.map(function(x){return x[1]}),backgroundColor:['#7c4dff','#448aff','#ff6b6b','#2ed573','#ffa502']}]},options:{plugins:{legend:{position:'bottom'}}}});
+  
+  // ISPs
+  var is={};
+  allData.forEach(function(v){if(v.isp&&v.isp!=='Unknown')is[v.isp]=(is[v.isp]||0)+1;});
+  var iSorted=Object.entries(is).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
+  
+  var ctx3=document.getElementById('ispChart').getContext('2d');
+  if(ispChart)ispChart.destroy();
+  ispChart=new Chart(ctx3,{type:'bar',data:{labels:iSorted.map(function(x){return x[0].substring(0,15)}),datasets:[{data:iSorted.map(function(x){return x[1]}),backgroundColor:'#7c4dff'}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,grid:{color:'#333'}}}}});
 }
 
-function exportCSV(){
-    var token=getCookie(cookieName);
-    fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+token}})
-    .then(function(r){return r.json();}).then(function(d){
-        var visits=d.visits||[];if(!visits.length){alert('无记录');return;}
-        var csv='\uFEFFIP,国家,国家代码,城市,地区,纬度,经度,时区,ISP,AS,UA,来源,时间\n';
-        visits.forEach(function(v){csv+=[v.ip,v.country,v.country_code,v.city,v.region,v.latitude,v.longitude,v.timezone,v.isp,v.as||'','"'+(v.user_agent||'').replace(/"/g,'""')+'"',v.referer||'',v.time].join(',')+'\n';});
-        var blob=new Blob([csv],{type:'text/csv;charset=utf-8'});var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='ip_visits_'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url);
-    });
-}
-function showConfirm(){document.getElementById('confirmModal').style.display='flex';}
-function closeConfirm(){document.getElementById('confirmModal').style.display='none';}
-function doClear(){var token=getCookie(cookieName);fetch('/api/admin/clear',{method:'POST',headers:{'Authorization':'Bearer '+token}}).then(function(r){if(r.status===401){doLogout();return;}closeConfirm();loadData();});}
-</script>
-<div id="debugBanner" style="position:fixed;bottom:0;left:0;right:0;background:#1a1a2e;color:#0f0;font:12px monospace;padding:8px;z-index:9999;max-height:120px;overflow-y:auto;" onclick="this.style.display='none'"></div>
-<script>
+// Auto login on page load
 (function(){
-  var _log=console.log;
-  var banner=document.getElementById('debugBanner');
-  console.log=function(){
-    _log.apply(console,arguments);
-    var msg=Array.prototype.slice.call(arguments).join(' ');
-    banner.innerHTML+=msg+'<br>';
-    banner.scrollTop=banner.scrollHeight;
-  };
-  window.onerror=function(msg,url,line){
-    console.log('ERROR: '+msg+' line:'+line);
-  };
+  var t=getCookie('ip_detect_admin');
+  if(t){
+    fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+t}})
+    .then(function(r){
+      if(r.ok)showAdmin();
+      else delCookie('ip_detect_admin');
+    })
+    .catch(function(){});
+  }
 })();
-</script><script>window.onerror=function(m,s,l,c,e){var b=document.getElementById('debugBanner');if(b){b.textContent+='[JS ERROR] '+m+' line:'+l;}};</script></body>
-</html>"""
+</script>
+</body>
+</html>
+
 
 
 # ========== 路由 ==========
