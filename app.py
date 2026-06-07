@@ -882,21 +882,27 @@ function doLogin(){console.log("[DEBUG] doLogin called");
   }
 function doLogout(){delCookie(cookieName);document.getElementById('adminPanel').style.display='none';document.getElementById('loginPage').style.display='flex';if(refreshTimer)clearInterval(refreshTimer);}
 
-function showAdmin(){console.log("[DEBUG] showAdmin called");
-    document.getElementById('loginPage').style.display='none';
-    document.getElementById('adminPanel').style.display='block';
-    try{initMap();}catch(e){console.error('Map init error:',e);}
-    try{loadData();}catch(e){console.error('Data load error:',e);}
+function showAdmin(){
+    console.log("[DEBUG] showAdmin START");
+    var lp=document.getElementById('loginPage');
+    var ap=document.getElementById('adminPanel');
+    console.log("[DEBUG] loginPage before:",lp.style.display,"adminPanel before:",ap.style.display);
+    lp.style.display='none';
+    ap.style.display='block';
+    console.log("[DEBUG] loginPage after:",lp.style.display,"adminPanel after:",ap.style.display);
+    try{initMap();console.log("[DEBUG] initMap OK");}catch(e){console.log("[DEBUG] initMap ERROR:",e.message);}
+    try{loadData();console.log("[DEBUG] loadData OK");}catch(e){console.log("[DEBUG] loadData ERROR:",e.message);}
     if(refreshTimer)clearInterval(refreshTimer);
     refreshTimer=setInterval(loadData,30000);
+    console.log("[DEBUG] showAdmin END - adminPanel display=",document.getElementById('adminPanel').style.display);
   }
 
 function initMap(){if(adminMap)return;adminMap=L.map('adminMap',{zoomControl:true}).setView([30,110],2);L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'©OSM ©CARTO',maxZoom:18}).addTo(adminMap);}
 
 function loadData(){console.log("[DEBUG] loadData called");
     var token=getCookie(cookieName);
-    fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+token}})
-    .then(function(r){if(r.status===401){doLogout();return null;}return r.json();})
+    console.log('[DEBUG] loadData fetching with token:',token);fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+token}})
+    .then(function(r){console.log('[DEBUG] visits status:',r.status);if(r.status===401){doLogout();return null;}return r.json();})
     .then(function(d){if(!d)return;allData=d.visits||[];allData.reverse();buildFilters();filterData();updateStats();updateMap();updateCharts();});
 }
 
