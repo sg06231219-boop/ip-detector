@@ -792,7 +792,7 @@ function doLogin(){
   })
   .then(function(r){return r.json()})
   .then(function(d){
-    if(d.success&&d.token){
+    if(d.token){
       setCookie('ip_detect_admin',d.token);
       showAdmin();
     }else{
