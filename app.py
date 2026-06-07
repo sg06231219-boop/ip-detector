@@ -1061,7 +1061,7 @@ function doClear(){var token=getCookie(cookieName);fetch('/api/admin/clear',{met
     console.log('ERROR: '+msg+' line:'+line);
   };
 })();
-</script></body>
+</script><script>window.onerror=function(m,s,l,c,e){var b=document.getElementById('debugBanner');if(b){b.textContent+='[JS ERROR] '+m+' line:'+l;}};</script></body>
 </html>"""
 
 
