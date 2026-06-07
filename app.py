@@ -831,8 +831,7 @@ var pendingDeleteIndex = -1;
 function getCookie(n){var m=document.cookie.match(new RegExp('(^| )'+n+'=([^;]+)'));return m?m[2]:'';}
 function setCookie(n,v){document.cookie=n+'='+v+'; path=/; max-age=86400';}
 function delCookie(n){document.cookie=n+'=; path=/; max-age=0';}
-(function(){
-    var t=getCookie(cookieName);
+(function(){console.log("[DEBUG] Page load, cookie:",getCookie(cookieName));var t=getCookie(cookieName);
     if(t){
       fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+t}})
       .then(function(r){
@@ -843,8 +842,8 @@ function delCookie(n){document.cookie=n+'=; path=/; max-age=0';}
     }
   })();
 
-function doLogin(){
-    var pwd=document.getElementById('pwdInput').value.trim();
+function doLogin(){console.log("[DEBUG] doLogin called");
+    var pwd=document.getElementById('pwdInput').value.trim();console.log('[DEBUG] pwd length:',pwd.length);
     var errEl=document.getElementById('loginError');
     if(!pwd){errEl.textContent='Please enter password';errEl.style.display='block';return;}
     errEl.style.display='none';
@@ -883,7 +882,7 @@ function doLogin(){
   }
 function doLogout(){delCookie(cookieName);document.getElementById('adminPanel').style.display='none';document.getElementById('loginPage').style.display='flex';if(refreshTimer)clearInterval(refreshTimer);}
 
-function showAdmin(){
+function showAdmin(){console.log("[DEBUG] showAdmin called");
     document.getElementById('loginPage').style.display='none';
     document.getElementById('adminPanel').style.display='block';
     try{initMap();}catch(e){console.error('Map init error:',e);}
@@ -894,7 +893,7 @@ function showAdmin(){
 
 function initMap(){if(adminMap)return;adminMap=L.map('adminMap',{zoomControl:true}).setView([30,110],2);L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'©OSM ©CARTO',maxZoom:18}).addTo(adminMap);}
 
-function loadData(){
+function loadData(){console.log("[DEBUG] loadData called");
     var token=getCookie(cookieName);
     fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+token}})
     .then(function(r){if(r.status===401){doLogout();return null;}return r.json();})
@@ -1041,7 +1040,22 @@ function showConfirm(){document.getElementById('confirmModal').style.display='fl
 function closeConfirm(){document.getElementById('confirmModal').style.display='none';}
 function doClear(){var token=getCookie(cookieName);fetch('/api/admin/clear',{method:'POST',headers:{'Authorization':'Bearer '+token}}).then(function(r){if(r.status===401){doLogout();return;}closeConfirm();loadData();});}
 </script>
-</body>
+<div id="debugBanner" style="position:fixed;bottom:0;left:0;right:0;background:#1a1a2e;color:#0f0;font:12px monospace;padding:8px;z-index:9999;max-height:120px;overflow-y:auto;" onclick="this.style.display='none'"></div>
+<script>
+(function(){
+  var _log=console.log;
+  var banner=document.getElementById('debugBanner');
+  console.log=function(){
+    _log.apply(console,arguments);
+    var msg=Array.prototype.slice.call(arguments).join(' ');
+    banner.innerHTML+=msg+'<br>';
+    banner.scrollTop=banner.scrollHeight;
+  };
+  window.onerror=function(msg,url,line){
+    console.log('ERROR: '+msg+' line:'+line);
+  };
+})();
+</script></body>
 </html>"""
 
 
