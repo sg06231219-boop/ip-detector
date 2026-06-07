@@ -706,7 +706,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;bac
 .tbl tr:hover{background:rgba(124,77,255,.05)}
 .tbl .btn-sm{padding:4px 10px;border-radius:6px;border:1px solid rgba(124,77,255,.3);background:transparent;color:#9fa8da;cursor:pointer;font-size:12px;margin-right:4px}
 .tbl .btn-sm:hover{border-color:#7c4dff;color:#7c4dff}
-.tbl .btn-del{border-color:rgba(255,82,82,.3);color:#ff5252}.btn-del:hover{background:rgba(255,82,82,.15)}
 .pager{display:flex;gap:6px;justify-content:center;margin-top:16px;flex-wrap:wrap}
 .pager button{padding:6px 12px;border-radius:8px;border:1px solid rgba(124,77,255,.2);background:transparent;color:#9fa8da;cursor:pointer;font-size:13px}
 .pager button.on{background:#7c4dff;color:#fff;border-color:#7c4dff}
@@ -751,163 +750,94 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;bac
   <div class="modal"><h3 id="detailTitle"></h3><div id="detailBody"></div>
   <button class="modal-close" onclick="document.getElementById('detailModal').style.display='none'">Close</button></div>
 </div>
-
 <script>
 var ALL=[],FILT=[],PG=1,PS=30,BUSY=false;
-
 function ck(n){try{var m=document.cookie.match(new RegExp("(^| )"+n+"=([^;]+)"));return m?m[2]:"";}catch(e){return "";}}
 function sk(n,v){document.cookie=n+"="+v+";path=/;max-age=86400;SameSite=Lax";}
 function dk(n){document.cookie=n+"=;path=/;max-age=0;SameSite=Lax";}
-function fl(cc){if(!cc||cc.length!==2)return "";var o=127397;try{return String.fromCodePoint(cc.charCodeAt(0)+o)+String.fromCodePoint(cc.charCodeAt(1)+o);}catch(e){return "";}}
-
+function fl(cc){if(!cc||cc.length!==2)return "";try{return String.fromCodePoint(cc.charCodeAt(0)+127397)+String.fromCodePoint(cc.charCodeAt(1)+127397);}catch(e){return "";}}
 function doLogin(){
   var p=document.getElementById("pwdInput"),e=document.getElementById("errMsg"),b=document.getElementById("loginBtn");
-  if(!p||!e||!b){console.error("Elements missing");return;}
+  if(!p||!e||!b)return;
   var pw=p.value.trim();
   if(!pw){e.textContent="Please enter password";e.style.display="block";return;}
-  e.style.display="none";
-  b.disabled=true;b.textContent="Logging in...";
+  e.style.display="none";b.disabled=true;b.textContent="Logging in...";
   fetch("/api/admin/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:pw})})
   .then(function(r){return r.json();})
-  .then(function(d){
-    b.disabled=false;b.textContent="Login";
-    if(d.token){sk("ip_detect_admin",d.token);goAdmin();}
-    else{e.textContent=d.message||"Login failed";e.style.display="block";}
-  })
+  .then(function(d){b.disabled=false;b.textContent="Login";if(d.token){sk("ip_detect_admin",d.token);goAdmin();}else{e.textContent=d.message||"Login failed";e.style.display="block";}})
   .catch(function(x){b.disabled=false;b.textContent="Login";e.textContent="Error: "+x.message;e.style.display="block";});
 }
-
 function doLogout(){dk("ip_detect_admin");location.reload();}
-
 function goAdmin(){
   var lw=document.getElementById("loginWrap"),aw=document.getElementById("adminWrap");
-  if(lw)lw.style.display="none";
-  if(aw)aw.style.display="block";
-  loadData();
-  setInterval(loadData,30000);
+  if(lw)lw.style.display="none";if(aw)aw.style.display="block";
+  loadData();setInterval(loadData,30000);
 }
-
 function loadData(){
-  var t=ck("ip_detect_admin");
-  if(!t){doLogout();return;}
-  if(BUSY)return;BUSY=true;
+  var t=ck("ip_detect_admin");if(!t){doLogout();return;}if(BUSY)return;BUSY=true;
   fetch("/api/admin/visits",{headers:{"Authorization":"Bearer "+t}})
-  .then(function(r){
-    if(r.status===401){doLogout();return null;}
-    return r.json();
-  })
-  .then(function(d){
-    BUSY=false;
-    if(!d)return;
-    ALL=(d.visits||[]).slice().reverse();
-    doFilter();
-    renderStats();
-    renderRT();
-  })
+  .then(function(r){if(r.status===401){doLogout();return null;}return r.json();})
+  .then(function(d){BUSY=false;if(!d)return;ALL=(d.visits||[]).slice().reverse();doFilter();renderStats();renderRT();})
   .catch(function(){BUSY=false;});
 }
-
 function renderRT(){
   var now=Date.now(),h1=0,m5=0;
-  for(var i=0;i<ALL.length;i++){
-    if(ALL[i].time){
-      var diff=now-new Date(ALL[i].time).getTime();
-      if(diff<3600000)h1++;
-      if(diff<300000)m5++;
-    }
-  }
-  var el=document.getElementById("rtText");
-  var last=ALL[0];
+  for(var i=0;i<ALL.length;i++){if(ALL[i].time){var df=now-new Date(ALL[i].time).getTime();if(df<3600000)h1++;if(df<300000)m5++;}}
+  var el=document.getElementById("rtText");var last=ALL[0];
   if(el)el.textContent="1h: "+h1+" | 5m: "+m5+(last?" | Last: "+fl(last.country_code)+" "+last.ip+" "+(last.city||""):"");
 }
-
 function renderStats(){
   var el=document.getElementById("statsRow");if(!el)return;
-  var total=ALL.length,today=new Date().toISOString().slice(0,10);
-  var td=0;for(var i=0;i<ALL.length;i++){if(ALL[i].time&&ALL[i].time.startsWith(today))td++;}
+  var total=ALL.length,today=new Date().toISOString().slice(0,10),td=0;
+  for(var i=0;i<ALL.length;i++){if(ALL[i].time&&ALL[i].time.startsWith(today))td++;}
   var uniq=new Set(ALL.map(function(v){return v.ip})).size;
-  var cn=new Set(ALL.map(function(v){return v.country}).filter(function(c){return c&&c!=="Unknown"&&c!=="未知"})).size;
-  el.innerHTML="<div class=\"stat\"><div class=\"num\">"+total+"</div><div class=\"lbl\">Total</div></div>"
-    +"<div class=\"stat\"><div class=\"num\">"+td+"</div><div class=\"lbl\">Today</div></div>"
-    +"<div class=\"stat\"><div class=\"num\">"+uniq+"</div><div class=\"lbl\">Unique IPs</div></div>"
-    +"<div class=\"stat\"><div class=\"num\">"+cn+"</div><div class=\"lbl\">Countries</div></div>";
+  var cn=new Set(ALL.map(function(v){return v.country}).filter(function(c){return c&&c!=="Unknown"&&c!==""})).size;
+  el.innerHTML='<div class="stat"><div class="num">'+total+'</div><div class="lbl">Total</div></div><div class="stat"><div class="num">'+td+'</div><div class="lbl">Today</div></div><div class="stat"><div class="num">'+uniq+'</div><div class="lbl">Unique IPs</div></div><div class="stat"><div class="num">'+cn+'</div><div class="lbl">Countries</div></div>';
 }
-
 function doFilter(){
   var q=(document.getElementById("searchBox")||{}).value||"",qL=q.toLowerCase();
   var cc=(document.getElementById("countrySel")||{}).value||"";
-  FILT=ALL.filter(function(v){
-    if(cc&&v.country!==cc)return false;
-    if(qL){var h=(v.ip||"")+(v.city||"")+(v.country||"")+(v.isp||"");if(h.toLowerCase().indexOf(qL)<0)return false;}
-    return true;
-  });
+  FILT=ALL.filter(function(v){if(cc&&v.country!==cc)return false;if(qL){var h=(v.ip||"")+(v.city||"")+(v.country||"")+(v.isp||"");if(h.toLowerCase().indexOf(qL)<0)return false;}return true;});
   PG=1;renderTable();buildCountries();
 }
-
 function buildCountries(){
   var cs={};ALL.forEach(function(v){if(v.country)cs[v.country]=1;});
-  var el=document.getElementById("countrySel");if(!el)return;
-  var cur=el.value;
-  el.innerHTML="<option value=\"\">All Countries</option>";
-  Object.keys(cs).sort().forEach(function(c){
-    var found=ALL.find(function(v){return v.country===c});
-    var opt=document.createElement("option");opt.value=c;opt.textContent=fl(found?found.country_code:"")+" "+c;el.appendChild(opt);
-  });
+  var el=document.getElementById("countrySel");if(!el)return;var cur=el.value;
+  el.innerHTML='<option value="">All Countries</option>';
+  Object.keys(cs).sort().forEach(function(c){var found=ALL.find(function(v){return v.country===c});var opt=document.createElement("option");opt.value=c;opt.textContent=fl(found?found.country_code:"")+" "+c;el.appendChild(opt);});
   el.value=cur;
 }
-
 function renderTable(){
   var tb=document.getElementById("tbody");if(!tb)return;
-  var total=FILT.length,pages=Math.ceil(total/PS)||1;
-  if(PG>pages)PG=pages;
+  var total=FILT.length,pages=Math.ceil(total/PS)||1;if(PG>pages)PG=pages;
   var s=(PG-1)*PS,data=FILT.slice(s,s+PS);
-  tb.innerHTML=data.map(function(v,i){
-    var f=fl(v.country_code)||"";
-    var t=v.time?new Date(v.time).toLocaleString():"-";
-    return "<tr><td>"+(s+i+1)+"</td><td>"+v.ip+"</td><td>"+f+" "+v.country+"</td><td>"+(v.city||"-")+"</td><td>"+(v.isp||"-").substring(0,20)+"</td><td style=\"font-size:12px\">"+t+"</td><td><button class=\"btn-sm\" onclick=\"showDetail("+(s+i)+")\">Info</button></td></tr>";
-  }).join("");
+  tb.innerHTML=data.map(function(v,i){return '<tr><td>'+(s+i+1)+'</td><td>'+v.ip+'</td><td>'+fl(v.country_code)+' '+(v.country||"")+'</td><td>'+(v.city||"-")+'</td><td>'+(v.isp||"-").substring(0,20)+'</td><td style="font-size:12px">'+(v.time?new Date(v.time).toLocaleString():"-")+'</td><td><button class="btn-sm" onclick="showDetail('+(s+i)+')">Info</button></td></tr>';}).join("");
   var pg=document.getElementById("pager");if(!pg)return;
-  var h="<button onclick=\"goPg("+(PG-1)+")\" "+(PG===1?"disabled":"")+">Prev</button>";
-  for(var p=Math.max(1,PG-3),ep=Math.min(pages,PG+3);p<=ep;p++){
-    h+="<button class=\""+(p===PG?"on":"")+"\" onclick=\"goPg("+p+")\">"+p+"</button>";
-  }
-  h+="<button onclick=\"goPg("+(PG+1)+")\" "+(PG===pages?"disabled":"")+">Next</button>";
+  var h='<button onclick="goPg('+(PG-1)+')" '+(PG===1?"disabled":"")+'>Prev</button>';
+  for(var p=Math.max(1,PG-3),ep=Math.min(pages,PG+3);p<=ep;p++){h+='<button class="'+(p===PG?"on":"")+'" onclick="goPg('+p+')">'+p+'</button>';}
+  h+='<button onclick="goPg('+(PG+1)+')" '+(PG===pages?"disabled":"")+'>Next</button>';
   pg.innerHTML=h;
 }
-
 function goPg(p){PG=p;renderTable();}
-
 function showDetail(idx){
   var v=FILT[idx];if(!v)return;
   var t=document.getElementById("detailTitle"),b=document.getElementById("detailBody");
-  if(t)t.textContent=v.ip;
-  if(b)b.innerHTML="<p>"+fl(v.country_code)+" "+(v.country||"-")+"</p><p>"+(v.city||"-")+"</p><p>"+(v.region||"-")+"</p><p>"+(v.isp||"-")+"</p><p>"+(v.as||"-")+"</p><p>"+(v.time?new Date(v.time).toLocaleString():"-")+"</p><p>"+(v.latitude||0)+", "+(v.longitude||0)+"</p>";
+  if(t)t.textContent=v.ip;if(b)b.innerHTML='<p>'+fl(v.country_code)+' '+(v.country||"-")+'</p><p>'+(v.city||"-")+'</p><p>'+(v.region||"-")+'</p><p>'+(v.isp||"-")+'</p><p>'+(v.time?new Date(v.time).toLocaleString():"-")+'</p><p>'+(v.latitude||0)+', '+(v.longitude||0)+'</p>';
   document.getElementById("detailModal").style.display="flex";
 }
-
 function doExport(){
   if(!ALL.length){alert("No data");return;}
   var rows=["IP,Country,City,ISP,Time,Lat,Lon"];
-  ALL.forEach(function(v){
-    rows.push([v.ip||"",v.country||"",v.city||"",v.isp||"",v.time||"",v.latitude||"",v.longitude||""].join(","));
-  });
-  var blob=new Blob([rows.join("\n")],{type:"text/csv"});
+  ALL.forEach(function(v){rows.push((v.ip||"")+","+(v.country||"")+","+(v.city||"")+","+(v.isp||"")+","+(v.time||"")+","+(v.latitude||"")+","+(v.longitude||""));});
+  var blob=new Blob([rows.join(String.fromCharCode(10))],{type:"text/csv"});
   var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="ip-visits.csv";a.click();
 }
-
 document.getElementById("pwdInput").addEventListener("keydown",function(ev){if(ev.key==="Enter")doLogin();});
-
-(function(){
-  var t=ck("ip_detect_admin");
-  if(t){
-    fetch("/api/admin/visits",{headers:{"Authorization":"Bearer "+t}})
-    .then(function(r){if(r.ok){goAdmin();}else{dk("ip_detect_admin");}})
-    .catch(function(){});
-  }
-})();
+(function(){var t=ck("ip_detect_admin");if(t){fetch("/api/admin/visits",{headers:{"Authorization":"Bearer "+t}}).then(function(r){if(r.ok){goAdmin();}else{dk("ip_detect_admin");}}).catch(function(){});}})();
 </script>
 </body>
 </html>"""
+
 ﻿
 
 
