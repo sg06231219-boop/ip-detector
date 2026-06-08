@@ -102,7 +102,7 @@ def _record_visit(ip: str, location: dict, user_agent: str = "", referer: str = 
     """记录访问，同IP 5分钟内去重"""
     visits = _load_visits()
     now = datetime.now()
-    for v in reversed(visits[-50:]):  # 只检查最近50条
+    for v in reversed(visits[-50:]):
         if v.get("ip") == ip:
             try:
                 last_time = datetime.strptime(v["time"], "%Y-%m-%d %H:%M:%S")
@@ -120,7 +120,13 @@ def _record_visit(ip: str, location: dict, user_agent: str = "", referer: str = 
         "longitude": location.get("longitude"),
         "timezone": location.get("timezone", "未知"),
         "isp": location.get("isp", "未知"),
+        "org": location.get("org", ""),
         "as": location.get("as", "未知"),
+        "zip": location.get("zip", ""),
+        "is_proxy": location.get("is_proxy", False),
+        "is_hosting": location.get("is_hosting", False),
+        "is_mobile": location.get("is_mobile", False),
+        "continent": location.get("continent", ""),
         "user_agent": user_agent[:200] if user_agent else "",
         "referer": referer[:200] if referer else "",
         "time": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -145,15 +151,19 @@ def _get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "0.0.0.0"
 
 async def _fetch_location(ip: str) -> dict:
-    """查询IP地理位置（带内存缓存）"""
+    """查询IP地理位置（双API源 + 内存缓存）"""
     now = time.time()
     cache_key = f"loc_{ip}"
     if cache_key in _location_cache:
         if now - _location_cache_ttl.get(cache_key, 0) < LOCATION_CACHE_TTL:
             return _location_cache[cache_key]
+    
+    result = {}
+    
+    # 源1: ip-api.com (免费45次/分, 中文, 含proxy/hosting/mobile检测)
     try:
         async with httpx.AsyncClient() as client:
-            fields = "status,message,country,countryCode,city,lat,lon,timezone,isp,as,regionName,zip"
+            fields = "status,message,country,countryCode,regionName,city,lat,lon,timezone,isp,org,as,zip,proxy,hosting,mobile"
             resp = await client.get(
                 f"http://ip-api.com/json/{ip}?lang=zh-CN&fields={fields}",
                 timeout=5.0,
@@ -163,22 +173,62 @@ async def _fetch_location(ip: str) -> dict:
                 if data.get("status") == "success":
                     result = {
                         "country": data.get("country", "未知"),
-                        "country_code": data.get("countryCode", "未知"),
+                        "country_code": data.get("countryCode", ""),
                         "city": data.get("city", "未知"),
-                        "latitude": data.get("lat", "未知"),
-                        "longitude": data.get("lon", "未知"),
+                        "latitude": data.get("lat", 0),
+                        "longitude": data.get("lon", 0),
                         "timezone": data.get("timezone", "未知"),
                         "isp": data.get("isp", "未知"),
+                        "org": data.get("org", ""),
                         "as": data.get("as", "未知"),
                         "region_name": data.get("regionName", "未知"),
-                        "zip": data.get("zip", "未知"),
+                        "zip": data.get("zip", ""),
+                        "is_proxy": data.get("proxy", False),
+                        "is_hosting": data.get("hosting", False),
+                        "is_mobile": data.get("mobile", False),
+                        "continent": "",
+                        "source": "ip-api",
                     }
                     _location_cache[cache_key] = result
                     _location_cache_ttl[cache_key] = now
                     return result
     except Exception:
         pass
-    return {}
+    
+    # 源2: freeipapi.com (免费, 补充大洲/语言/代理信息)
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"https://freeipapi.com/api/json/{ip}",
+                timeout=8.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                result = {
+                    "country": data.get("countryName", "未知"),
+                    "country_code": data.get("countryCode", ""),
+                    "city": data.get("cityName", "未知"),
+                    "latitude": data.get("latitude", 0),
+                    "longitude": data.get("longitude", 0),
+                    "timezone": (data.get("timeZones") or ["未知"])[0] if isinstance(data.get("timeZones"), list) else "未知",
+                    "isp": data.get("asnOrganization", "未知"),
+                    "org": data.get("asnOrganization", ""),
+                    "as": "AS" + str(data.get("asn", "")),
+                    "region_name": data.get("regionName", "未知"),
+                    "zip": data.get("zipCode", ""),
+                    "is_proxy": data.get("isProxy", False),
+                    "is_hosting": False,
+                    "is_mobile": False,
+                    "continent": data.get("continentName", ""),
+                    "source": "freeipapi",
+                }
+                _location_cache[cache_key] = result
+                _location_cache_ttl[cache_key] = now
+                return result
+    except Exception:
+        pass
+    
+    return result
 
 def get_country_flag(code: str) -> str:
     if not code or len(code) != 2:
@@ -359,6 +409,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .card-isp .card-icon { background: rgba(105,240,174,0.15); }
         .card-as .card-icon { background: rgba(255,145,0,0.15); }
         .card-region .card-icon { background: rgba(255,82,82,0.15); }
+        .card-proxy .card-icon { background: rgba(255,215,64,0.15); }
+        .card-continent .card-icon { background: rgba(0,230,118,0.15); }
         .card-browser .card-icon { background: rgba(234,128,252,0.15); }
         .map-section { margin: 30px 0; animation: fadeInUp 0.6s ease-out 0.8s both; }
         .map-section h3 { font-size: 16px; color: var(--text-secondary); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
@@ -508,6 +560,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <div class="card-value" style="font-size:16px;">__REGION_NAME__</div>
                 <div class="card-sub">邮编: __ZIP__</div>
             </div>
+                        <div class="info-card card-continent">
+                <div class="card-header"><div class="card-icon">🌏</div><div class="card-title">大洲</div></div>
+                <div class="card-value" style="font-size:16px;">__CONTINENT__</div>
+                <div class="card-sub">组织: __ORG__</div>
+            </div>
+            <div class="info-card card-proxy">
+                <div class="card-header"><div class="card-icon">🛡️</div><div class="card-title">安全检测</div></div>
+                <div class="card-value" id="proxyStatus">__PROXY_STATUS__</div>
+                <div class="card-sub">代理/VPN/云服务检测</div>
+            </div>
             <div class="info-card card-browser">
                 <div class="card-header"><div class="card-icon">🖥️</div><div class="card-title">您的浏览器</div></div>
                 <div class="card-value" style="font-size:14px;" id="browserInfo">检测中...</div>
@@ -532,7 +594,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <div class="json-content" id="jsonContent">__JSON_DATA__</div>
         </div>
         <div class="footer">
-            IP智能定位工具 · 数据来源 ip-api.com · 检测时间 __TIMESTAMP__<br>
+            IP智能定位工具 · 数据来源 ip-api.com + freeipapi.com · 检测时间 __TIMESTAMP__<br>
             <span style="opacity:0.5;">位置为大致估算，不代表精确住址</span><br>
             <a href="/admin" style="color:var(--text-muted);font-size:11px;margin-top:4px;display:inline-block">🔒 管理后台</a>
         </div>
@@ -672,56 +734,81 @@ ADMIN_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>IP Detector - Admin</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
+<style>*{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#0a0e27;color:#e8eaf6;min-height:100vh}
 .login-wrap{display:flex;justify-content:center;align-items:center;min-height:100vh}
-.login-box{background:#111640;border:1px solid rgba(124,77,255,.3);border-radius:20px;padding:40px;width:360px;text-align:center}
-.login-box h2{margin-bottom:24px;font-size:22px}
-.login-box input{width:100%;padding:14px;border-radius:12px;border:1px solid rgba(124,77,255,.3);background:rgba(255,255,255,.05);color:#e8eaf6;font-size:16px;outline:none;margin-bottom:16px}
-.login-box input:focus{border-color:#7c4dff}
-.login-box button{width:100%;padding:14px;border-radius:12px;border:none;background:linear-gradient(135deg,#7c4dff,#448aff);color:#fff;font-size:16px;font-weight:600;cursor:pointer}
-.login-box button:disabled{opacity:.5;cursor:not-allowed}
+.login-box{background:#111640;border:1px solid rgba(124,77,255,.3);border-radius:24px;padding:48px;width:380px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+.login-box .logo{font-size:48px;margin-bottom:16px}
+.login-box h2{margin-bottom:8px;font-size:24px;background:linear-gradient(135deg,#7c4dff,#448aff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.login-box .sub{color:#5c6bc0;font-size:13px;margin-bottom:24px}
+.login-box input{width:100%;padding:14px 18px;border-radius:12px;border:1px solid rgba(124,77,255,.3);background:rgba(255,255,255,.05);color:#e8eaf6;font-size:16px;outline:none;margin-bottom:16px;transition:border-color .3s}
+.login-box input:focus{border-color:#7c4dff;box-shadow:0 0 0 3px rgba(124,77,255,.15)}
+.login-box button{width:100%;padding:14px;border-radius:12px;border:none;background:linear-gradient(135deg,#7c4dff,#448aff);color:#fff;font-size:16px;font-weight:600;cursor:pointer;transition:transform .2s,box-shadow .2s}
+.login-box button:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(124,77,255,.3)}
+.login-box button:disabled{opacity:.5;cursor:not-allowed;transform:none}
 .err{color:#ff5252;font-size:13px;margin-top:8px;display:none}
-.admin-wrap{display:none;padding:20px;max-width:1200px;margin:0 auto}
-.admin-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px}
-.admin-header h2{font-size:20px}
+.admin-wrap{display:none;padding:24px;max-width:1300px;margin:0 auto}
+.admin-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px}
+.admin-header h2{font-size:22px;display:flex;align-items:center;gap:10px}
 .header-btns{display:flex;gap:8px}
-.btn{padding:8px 16px;border-radius:10px;border:1px solid rgba(124,77,255,.3);background:rgba(255,255,255,.05);color:#9fa8da;cursor:pointer;font-size:13px}
-.btn:hover{border-color:#7c4dff;color:#7c4dff}
+.btn{padding:8px 18px;border-radius:10px;border:1px solid rgba(124,77,255,.3);background:rgba(255,255,255,.05);color:#9fa8da;cursor:pointer;font-size:13px;transition:all .2s;display:flex;align-items:center;gap:6px}
+.btn:hover{border-color:#7c4dff;color:#7c4dff;background:rgba(124,77,255,.1)}
 .btn-danger{border-color:rgba(255,82,82,.3);color:#ff5252}.btn-danger:hover{background:rgba(255,82,82,.15)}
-.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px}
-.stat{background:#111640;border:1px solid rgba(124,77,255,.2);border-radius:12px;padding:16px;text-align:center}
-.stat .num{font-size:28px;font-weight:800;background:linear-gradient(135deg,#7c4dff,#448aff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.stat .lbl{font-size:11px;color:#5c6bc0;text-transform:uppercase;letter-spacing:1px;margin-top:4px}
-.rt-bar{background:rgba(105,240,174,.08);border:1px solid rgba(105,240,174,.2);border-radius:10px;padding:10px 16px;margin-bottom:16px;display:flex;align-items:center;gap:8px;font-size:13px}
+.rt-bar{background:rgba(105,240,174,.08);border:1px solid rgba(105,240,174,.2);border-radius:14px;padding:12px 20px;margin-bottom:20px;display:flex;align-items:center;gap:10px;font-size:13px}
 .rt-dot{width:8px;height:8px;border-radius:50%;background:#69f0ae;animation:bk 1.5s infinite}
 @keyframes bk{0%,100%{opacity:1}50%{opacity:.3}}
-.filters{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
-.filters input,.filters select{padding:8px 12px;border-radius:10px;border:1px solid rgba(124,77,255,.2);background:rgba(255,255,255,.05);color:#e8eaf6;font-size:13px;outline:none}
+.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:24px}
+.stat{background:linear-gradient(145deg,#111640,#0d1033);border:1px solid rgba(124,77,255,.15);border-radius:14px;padding:18px 14px;text-align:center;transition:transform .2s}
+.stat:hover{transform:translateY(-2px)}
+.stat .num{font-size:28px;font-weight:800;background:linear-gradient(135deg,#7c4dff,#448aff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.stat .lbl{font-size:10px;color:#5c6bc0;text-transform:uppercase;letter-spacing:1.5px;margin-top:4px}
+.chart-sec{background:linear-gradient(145deg,#111640,#0d1033);border:1px solid rgba(124,77,255,.15);border-radius:14px;padding:20px;margin-bottom:24px}
+.chart-sec h3{font-size:14px;color:#7c4dff;margin-bottom:16px;text-transform:uppercase;letter-spacing:1px}
+.bar-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.bar-label{min-width:100px;font-size:12px;color:#9fa8da;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar-track{flex:1;height:20px;background:rgba(255,255,255,.05);border-radius:10px;overflow:hidden}
+.bar-fill{height:100%;background:linear-gradient(90deg,#7c4dff,#448aff);border-radius:10px;transition:width .5s ease;min-width:4px}
+.bar-val{min-width:30px;font-size:12px;color:#18ffff;font-weight:700;text-align:right}
+.filters{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+.filters input,.filters select{padding:8px 14px;border-radius:10px;border:1px solid rgba(124,77,255,.2);background:rgba(255,255,255,.05);color:#e8eaf6;font-size:13px;outline:none;transition:border-color .3s}
+.filters input:focus,.filters select:focus{border-color:#7c4dff}
 .filters select option{background:#111640}
+.proxy-toggle{display:flex;align-items:center;gap:6px;font-size:13px;color:#ff5252;cursor:pointer}
+.proxy-toggle input{accent-color:#ff5252}
 .tbl{width:100%;border-collapse:collapse;font-size:13px}
-.tbl th{text-align:left;padding:10px 8px;border-bottom:1px solid rgba(124,77,255,.2);color:#5c6bc0;font-size:11px;text-transform:uppercase;letter-spacing:1px}
+.tbl th{text-align:left;padding:12px 8px;border-bottom:1px solid rgba(124,77,255,.2);color:#5c6bc0;font-size:10px;text-transform:uppercase;letter-spacing:1.5px}
 .tbl td{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.03)}
 .tbl tr:hover{background:rgba(124,77,255,.05)}
-.btn-sm{padding:4px 10px;border-radius:6px;border:1px solid rgba(124,77,255,.3);background:transparent;color:#9fa8da;cursor:pointer;font-size:12px}
-.btn-sm:hover{border-color:#7c4dff;color:#7c4dff}
+.ip-cell{color:#18ffff;font-family:'Courier New',monospace;font-weight:600}
+.badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;text-transform:uppercase;margin-right:4px}
+.badge-proxy{background:rgba(255,82,82,.15);color:#ff5252;border:1px solid rgba(255,82,82,.3)}
+.badge-mobile{background:rgba(255,215,64,.15);color:#ffd740;border:1px solid rgba(255,215,64,.3)}
+.btn-sm{padding:4px 10px;border-radius:6px;border:1px solid rgba(124,77,255,.3);background:transparent;color:#9fa8da;cursor:pointer;font-size:11px;transition:all .2s}
+.btn-sm:hover{border-color:#7c4dff;color:#7c4dff;background:rgba(124,77,255,.1)}
 .btn-rm{border-color:rgba(255,82,82,.3);color:#ff5252}.btn-rm:hover{background:rgba(255,82,82,.15)}
-.pager{display:flex;gap:6px;justify-content:center;margin-top:16px;flex-wrap:wrap}
-.pager button{padding:6px 12px;border-radius:8px;border:1px solid rgba(124,77,255,.2);background:transparent;color:#9fa8da;cursor:pointer;font-size:13px}
+.pager{display:flex;gap:6px;justify-content:center;margin-top:20px;flex-wrap:wrap}
+.pager button{padding:6px 12px;border-radius:8px;border:1px solid rgba(124,77,255,.2);background:transparent;color:#9fa8da;cursor:pointer;font-size:13px;transition:all .2s}
 .pager button.on{background:#7c4dff;color:#fff;border-color:#7c4dff}
 .pager button:disabled{opacity:.3;cursor:not-allowed}
-.modal-bg{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);justify-content:center;align-items:center;z-index:999}
-.modal{background:#111640;border:1px solid rgba(124,77,255,.3);border-radius:16px;padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto}
-.modal h3{margin-bottom:16px}.modal p{margin:8px 0;font-size:14px;color:#9fa8da}
-.modal-close{display:block;margin-top:16px;padding:10px 20px;border-radius:10px;border:none;background:#7c4dff;color:#fff;cursor:pointer;width:100%}
-.ver{color:#5c6bc0;font-size:11px;margin-top:12px;text-align:center}
-</style>
+.modal-bg{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.75);backdrop-filter:blur(4px);justify-content:center;align-items:center;z-index:999}
+.modal{background:linear-gradient(145deg,#111640,#0d1033);border:1px solid rgba(124,77,255,.3);border-radius:20px;padding:28px;max-width:600px;width:92%;max-height:85vh;overflow-y:auto;animation:mi .3s ease}
+@keyframes mi{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}
+.modal h3{margin-bottom:20px;font-size:18px;display:flex;align-items:center;gap:8px}
+.dg{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.di{background:rgba(255,255,255,.03);border-radius:10px;padding:12px}
+.dl{font-size:10px;color:#5c6bc0;text-transform:uppercase;letter-spacing:1px;display:block;margin-bottom:4px}
+.dv{font-size:14px;color:#e8eaf6;word-break:break-all}
+.modal-close{display:block;margin-top:20px;padding:12px 20px;border-radius:12px;border:none;background:linear-gradient(135deg,#7c4dff,#448aff);color:#fff;cursor:pointer;width:100%;font-size:14px;font-weight:600;transition:transform .2s}
+.modal-close:hover{transform:translateY(-1px)}
+.ver{color:#5c6bc0;font-size:11px;margin-top:16px;text-align:center}
+@media(max-width:768px){.dg{grid-template-columns:1fr}.stats-row{grid-template-columns:repeat(3,1fr)}.bar-label{min-width:60px;font-size:11px}}</style>
 </head>
 <body>
 <div id="loginWrap" class="login-wrap">
   <div class="login-box">
-    <h2>Admin Login</h2>
+    <div class="logo">🛡️</div>
+    <h2>Admin Dashboard</h2>
+    <div class="sub">IP Detector Management Console</div>
     <input type="password" id="pwdInput" placeholder="Enter password" autocomplete="current-password">
     <button id="loginBtn" onclick="doLogin()">Login</button>
     <div id="errMsg" class="err"></div>
@@ -729,32 +816,36 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;bac
 </div>
 <div id="adminWrap" class="admin-wrap">
   <div class="admin-header">
-    <h2>IP Access Dashboard</h2>
+    <h2><span style="font-size:28px">📊</span> IP Access Dashboard</h2>
     <div class="header-btns">
-      <button class="btn" onclick="loadData()">Refresh</button>
-      <button class="btn" onclick="doExport()">CSV</button>
-      <button class="btn btn-danger" onclick="doLogout()">Logout</button>
+      <button class="btn" onclick="loadData()">🔄 Refresh</button>
+      <button class="btn" onclick="doExport()">📥 CSV</button>
+      <button class="btn btn-danger" onclick="doLogout()">🚪 Logout</button>
     </div>
   </div>
   <div class="rt-bar"><span class="rt-dot"></span><span id="rtText">Loading...</span></div>
   <div id="statsRow" class="stats-row"></div>
+  <div class="chart-sec">
+    <h3>🌍 Top Countries</h3>
+    <div id="chartBars"></div>
+  </div>
   <div class="filters">
-    <input id="searchBox" placeholder="Search IP/city..." oninput="doFilter()">
+    <input id="searchBox" placeholder="Search IP / city / ISP..." oninput="doFilter()" style="flex:1;min-width:200px">
     <select id="countrySel" onchange="doFilter()"><option value="">All Countries</option></select>
+    <label class="proxy-toggle"><input type="checkbox" id="proxyFilter" onchange="doFilter()"> VPN/Proxy Only</label>
   </div>
   <table class="tbl">
-    <thead><tr><th>#</th><th>IP</th><th>Country</th><th>City</th><th>ISP</th><th>Time</th><th>Act</th></tr></thead>
+    <thead><tr><th>#</th><th>IP</th><th>Country</th><th>City</th><th>ISP</th><th>Flags</th><th>Time</th><th>Action</th></tr></thead>
     <tbody id="tbody"></tbody>
   </table>
   <div id="pager" class="pager"></div>
   <div class="ver" id="verLabel"></div>
 </div>
 <div id="detailModal" class="modal-bg" onclick="if(event.target===this)this.style.display='none'">
-  <div class="modal"><h3 id="detailTitle"></h3><div id="detailBody"></div>
+  <div class="modal"><h3>🔍 <span id="detailTitle"></span></h3><div id="detailBody"></div>
   <button class="modal-close" onclick="document.getElementById('detailModal').style.display='none'">Close</button></div>
 </div>
-<script>
-var ALL=[],FILT=[],PG=1,PS=30,BUSY=false,VER="9.5.0";
+<script>var ALL=[],FILT=[],PG=1,PS=30,BUSY=false,VER="10.0.0";
 function ck(n){try{var m=document.cookie.match(new RegExp("(^| )"+n+"=([^;]+)"));return m?m[2]:"";}catch(e){return "";}}
 function sk(n,v){document.cookie=n+"="+v+";path=/;max-age=86400;SameSite=Lax";}
 function dk(n){document.cookie=n+"=;path=/;max-age=0;SameSite=Lax";}
@@ -785,7 +876,7 @@ function loadData(){
   var t=ck("ip_detect_admin");if(!t){doLogout();return;}if(BUSY)return;BUSY=true;
   fetch("/api/admin/visits",{headers:{"Authorization":"Bearer "+t}})
   .then(function(r){if(r.status===401){doLogout();return null;}return r.json();})
-  .then(function(d){BUSY=false;if(!d)return;ALL=(d.visits||[]).slice().reverse();doFilter();renderStats();renderRT();})
+  .then(function(d){BUSY=false;if(!d)return;ALL=(d.visits||[]).slice().reverse();doFilter();renderStats();renderRT();renderChart();})
   .catch(function(){BUSY=false;});
 }
 function renderRT(){
@@ -800,26 +891,45 @@ function renderStats(){
   for(var i=0;i<ALL.length;i++){if(ALL[i].time&&ALL[i].time.startsWith(today))td++;}
   var uniq=new Set(ALL.map(function(v){return v.ip})).size;
   var cn=new Set(ALL.map(function(v){return v.country}).filter(function(c){return c&&c!=="Unknown"&&c!==""})).size;
-  el.innerHTML='<div class="stat"><div class="num">'+total+'</div><div class="lbl">Total</div></div><div class="stat"><div class="num">'+td+'</div><div class="lbl">Today</div></div><div class="stat"><div class="num">'+uniq+'</div><div class="lbl">Unique IPs</div></div><div class="stat"><div class="num">'+cn+'</div><div class="lbl">Countries</div></div>';
+  var proxys=ALL.filter(function(v){return v.is_proxy||v.is_hosting}).length;
+  el.innerHTML='<div class="stat"><div class="num">'+total+'</div><div class="lbl">Total</div></div><div class="stat"><div class="num">'+td+'</div><div class="lbl">Today</div></div><div class="stat"><div class="num">'+uniq+'</div><div class="lbl">Unique IPs</div></div><div class="stat"><div class="num">'+cn+'</div><div class="lbl">Countries</div></div><div class="stat"><div class="num" style="background:linear-gradient(135deg,#ff5252,#ff9800);-webkit-background-clip:text;-webkit-text-fill-color:transparent">'+proxys+'</div><div class="lbl">Proxies</div></div>';
+}
+function renderChart(){
+  var el=document.getElementById("chartBars");if(!el)return;
+  var cs={};ALL.forEach(function(v){var c=v.country||"Unknown";cs[c]=(cs[c]||0)+1;});
+  var sorted=Object.entries(cs).sort(function(a,b){return b[1]-a[1];}).slice(0,8);
+  var maxC=sorted.length?sorted[0][1]:1;
+  el.innerHTML=sorted.map(function(e){var pct=Math.round(e[1]/maxC*100);var f=ALL.find(function(v){return v.country===e[0];});return '<div class="bar-row"><span class="bar-label">'+fl(f?f.country_code:"")+" "+e[0]+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%"></div></div><span class="bar-val">'+e[1]+'</span></div>';}).join("");
 }
 function doFilter(){
   var q=(document.getElementById("searchBox")||{}).value||"",qL=q.toLowerCase();
   var cc=(document.getElementById("countrySel")||{}).value||"";
-  FILT=ALL.filter(function(v){if(cc&&v.country!==cc)return false;if(qL){var h=(v.ip||"")+(v.city||"")+(v.country||"")+(v.isp||"");if(h.toLowerCase().indexOf(qL)<0)return false;}return true;});
+  var proxyOnly=(document.getElementById("proxyFilter")||{}).checked;
+  FILT=ALL.filter(function(v){
+    if(cc&&v.country!==cc)return false;
+    if(proxyOnly&&!v.is_proxy&&!v.is_hosting)return false;
+    if(qL){var h=(v.ip||"")+(v.city||"")+(v.country||"")+(v.isp||"")+(v.org||"");if(h.toLowerCase().indexOf(qL)<0)return false;}
+    return true;
+  });
   PG=1;renderTable();buildCountries();
 }
 function buildCountries(){
   var cs={};ALL.forEach(function(v){if(v.country)cs[v.country]=1;});
   var el=document.getElementById("countrySel");if(!el)return;var cur=el.value;
   el.innerHTML='<option value="">All Countries</option>';
-  Object.keys(cs).sort().forEach(function(c){var found=ALL.find(function(v){return v.country===c});var opt=document.createElement("option");opt.value=c;opt.textContent=fl(found?found.country_code:"")+" "+c;el.appendChild(opt);});
+  Object.keys(cs).sort().forEach(function(c){var f=ALL.find(function(v){return v.country===c});var opt=document.createElement("option");opt.value=c;opt.textContent=fl(f?f.country_code:"")+" "+c;el.appendChild(opt);});
   el.value=cur;
 }
 function renderTable(){
   var tb=document.getElementById("tbody");if(!tb)return;
   var total=FILT.length,pages=Math.ceil(total/PS)||1;if(PG>pages)PG=pages;
   var s=(PG-1)*PS,data=FILT.slice(s,s+PS);
-  tb.innerHTML=data.map(function(v,i){return '<tr><td>'+(s+i+1)+'</td><td>'+v.ip+'</td><td>'+fl(v.country_code)+' '+(v.country||"")+'</td><td>'+(v.city||"-")+'</td><td>'+(v.isp||"-").substring(0,20)+'</td><td style="font-size:12px">'+(v.time?new Date(v.time).toLocaleString():"-")+'</td><td><button class="btn-sm" onclick="showDetail('+(s+i)+')">Info</button> <button class="btn-sm btn-rm" onclick="delVisit('+i+')">Del</button></td></tr>';}).join("");
+  tb.innerHTML=data.map(function(v,i){
+    var badges="";
+    if(v.is_proxy||v.is_hosting)badges+='<span class="badge badge-proxy">VPN</span>';
+    if(v.is_mobile)badges+='<span class="badge badge-mobile">Mobile</span>';
+    return '<tr><td>'+(s+i+1)+'</td><td class="ip-cell">'+v.ip+'</td><td>'+fl(v.country_code)+' '+(v.country||"")+'</td><td>'+(v.city||"-")+'</td><td style="font-size:12px">'+(v.isp||"-").substring(0,18)+'</td><td>'+badges+'</td><td style="font-size:11px">'+(v.time?new Date(v.time).toLocaleString():"-")+'</td><td><button class="btn-sm" onclick="showDetail('+(s+i)+')">Detail</button> <button class="btn-sm btn-rm" onclick="delVisit('+i+')">Del</button></td></tr>';
+  }).join("");
   var pg=document.getElementById("pager");if(!pg)return;
   var h='<button onclick="goPg('+(PG-1)+')" '+(PG===1?"disabled":"")+'>Prev</button>';
   for(var p=Math.max(1,PG-3),ep=Math.min(pages,PG+3);p<=ep;p++){h+='<button class="'+(p===PG?"on":"")+'" onclick="goPg('+p+')">'+p+'</button>';}
@@ -830,7 +940,8 @@ function goPg(p){PG=p;renderTable();}
 function showDetail(idx){
   var v=FILT[idx];if(!v)return;
   var t=document.getElementById("detailTitle"),b=document.getElementById("detailBody");
-  if(t)t.textContent=v.ip;if(b)b.innerHTML='<p>'+fl(v.country_code)+' '+(v.country||"-")+'</p><p>'+(v.city||"-")+'</p><p>'+(v.region||"-")+'</p><p>'+(v.isp||"-")+'</p><p>'+(v.time?new Date(v.time).toLocaleString():"-")+'</p><p>'+(v.latitude||0)+', '+(v.longitude||0)+'</p>';
+  if(t)t.textContent=v.ip;
+  if(b)b.innerHTML='<div class="dg"><div class="di"><span class="dl">Country</span><span class="dv">'+fl(v.country_code)+' '+(v.country||"-")+'</span></div><div class="di"><span class="dl">City</span><span class="dv">'+(v.city||"-")+'</span></div><div class="di"><span class="dl">Region</span><span class="dv">'+(v.region||"-")+'</span></div><div class="di"><span class="dl">ISP</span><span class="dv">'+(v.isp||"-")+'</span></div><div class="di"><span class="dl">Org</span><span class="dv">'+(v.org||"-")+'</span></div><div class="di"><span class="dl">AS</span><span class="dv">'+(v.as||"-")+'</span></div><div class="di"><span class="dl">Zip</span><span class="dv">'+(v.zip||"-")+'</span></div><div class="di"><span class="dl">Coords</span><span class="dv">'+(v.latitude||0)+', '+(v.longitude||0)+'</span></div><div class="di"><span class="dl">Proxy</span><span class="dv">'+(v.is_proxy?"Yes":"No")+'</span></div><div class="di"><span class="dl">Mobile</span><span class="dv">'+(v.is_mobile?"Yes":"No")+'</span></div><div class="di"><span class="dl">Time</span><span class="dv">'+(v.time?new Date(v.time).toLocaleString():"-")+'</span></div></div>';
   document.getElementById("detailModal").style.display="flex";
 }
 function delVisit(idx){
@@ -839,28 +950,21 @@ function delVisit(idx){
   var t=ck("ip_detect_admin");
   fetch("/api/admin/visits",{method:"DELETE",headers:{"Authorization":"Bearer "+t,"Content-Type":"application/json"},body:JSON.stringify({ip:v.ip})})
   .then(function(r){return r.json();})
-  .then(function(d){if(d.deleted||d.ok){loadData();}else{alert("Failed: "+(d.message||"unknown"));}})
+  .then(function(d){if(d.deleted||d.ok||d.message){loadData();}else{alert("Failed: "+(d.message||"unknown"));}})
   .catch(function(x){alert("Error: "+x.message);});
 }
 function doExport(){
   if(!ALL.length){alert("No data");return;}
-  var rows=["IP,Country,City,ISP,Time,Lat,Lon"];
-  ALL.forEach(function(v){rows.push((v.ip||"")+","+(v.country||"")+","+(v.city||"")+","+(v.isp||"")+","+(v.time||"")+","+(v.latitude||"")+","+(v.longitude||""));});
+  var rows=["IP,Country,CountryCode,City,Region,ISP,Org,AS,Zip,Lat,Lon,Proxy,Mobile,Time"];
+  ALL.forEach(function(v){rows.push([v.ip||"",v.country||"",v.country_code||"",v.city||"",v.region||"",v.isp||"",v.org||"",v.as||"",v.zip||"",v.latitude||"",v.longitude||"",v.is_proxy?"Yes":"No",v.is_mobile?"Yes":"No",v.time||""].join(","));});
   var blob=new Blob([rows.join(String.fromCharCode(10))],{type:"text/csv"});
-  var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="ip-visits.csv";a.click();
+  var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="ip-visits-"+new Date().toISOString().slice(0,10)+".csv";a.click();
 }
-// Unregister any old service workers to prevent caching issues
 if("serviceWorker" in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
 document.getElementById("pwdInput").addEventListener("keydown",function(ev){if(ev.key==="Enter")doLogin();});
-(function(){var t=ck("ip_detect_admin");if(t){fetch("/api/admin/visits",{headers:{"Authorization":"Bearer "+t}}).then(function(r){if(r.ok){enterAdmin();}else{dk("ip_detect_admin");}}).catch(function(){});}})();
-</script>
+(function(){var t=ck("ip_detect_admin");if(t){fetch("/api/admin/visits",{headers:{"Authorization":"Bearer "+t}}).then(function(r){if(r.ok){enterAdmin();}else{dk("ip_detect_admin");}}).catch(function(){});}})();</script>
 </body>
 </html>"""
-
-
-
-
-
 
 
 # ========== 路由 ==========
@@ -890,6 +994,16 @@ async def get_ip_info(request: Request):
     except (ValueError, TypeError):
         map_bbox = "112.5,37.8,112.6,37.9"
 
+    is_proxy = location.get("is_proxy", False)
+    is_hosting = location.get("is_hosting", False)
+    is_mobile = location.get("is_mobile", False)
+    if is_proxy or is_hosting:
+        proxy_status = "🚨 检测到代理/VPN/云服务"
+    elif is_mobile:
+        proxy_status = "📱 移动网络"
+    else:
+        proxy_status = "✅ 正常连接"
+
     json_data = {"ip": ip, "location": location or None, "error": None}
     json_str = json.dumps(json_data, ensure_ascii=False, indent=2)
     json_raw = json.dumps(json_data, ensure_ascii=False)
@@ -908,6 +1022,9 @@ async def get_ip_info(request: Request):
         ("__ISP__", location.get("isp", "未知")),
         ("__AS__", location.get("as", "未知")),
         ("__ZIP__", location.get("zip", "未知")),
+        ("__ORG__", location.get("org", "未知")),
+        ("__CONTINENT__", location.get("continent", "未知")),
+        ("__PROXY_STATUS__", proxy_status),
         ("__MAP_BBOX__", map_bbox),
         ("__JSON_DATA__", json_str.replace("<", "&lt;").replace(">", "&gt;")),
         ("__JSON_RAW__", json_raw),
@@ -969,7 +1086,7 @@ async def get_stats():
 
 @app.get("/api/version")
 async def get_version():
-    return {"version": "9.5.0", "name": "IP Detector"}
+    return {"version": "10.0.0", "name": "IP Detector"}
 
 
 
