@@ -801,6 +801,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;bac
 .modal-close{display:block;margin-top:20px;padding:12px 20px;border-radius:12px;border:none;background:linear-gradient(135deg,#7c4dff,#448aff);color:#fff;cursor:pointer;width:100%;font-size:14px;font-weight:600;transition:transform .2s}
 .modal-close:hover{transform:translateY(-1px)}
 .ver{color:#5c6bc0;font-size:11px;margin-top:16px;text-align:center}
+.loading-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(10,14,39,.9);z-index:1000;justify-content:center;align-items:center;font-size:18px;color:#7c4dff}
+.loading-overlay.show{display:flex}
 @media(max-width:768px){.dg{grid-template-columns:1fr}.stats-row{grid-template-columns:repeat(3,1fr)}.bar-label{min-width:60px;font-size:11px}}</style>
 </head>
 <body>
@@ -845,7 +847,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;bac
   <div class="modal"><h3>🔍 <span id="detailTitle"></span></h3><div id="detailBody"></div>
   <button class="modal-close" onclick="document.getElementById('detailModal').style.display='none'">Close</button></div>
 </div>
-<script>var ALL=[],FILT=[],PG=1,PS=30,BUSY=false,VER="10.0.0";
+<div id="loadingOverlay" class="loading-overlay">⏳ Waking up server...</div>
+<script>var ALL=[],FILT=[],PG=1,PS=30,BUSY=false,VER="10.0.1",RETRY=0;
 function ck(n){try{var m=document.cookie.match(new RegExp("(^| )"+n+"=([^;]+)"));return m?m[2]:"";}catch(e){return "";}}
 function sk(n,v){document.cookie=n+"="+v+";path=/;max-age=86400;SameSite=Lax";}
 function dk(n){document.cookie=n+"=;path=/;max-age=0;SameSite=Lax";}
@@ -875,9 +878,16 @@ function enterAdmin(){
 function loadData(){
   var t=ck("ip_detect_admin");if(!t){doLogout();return;}if(BUSY)return;BUSY=true;
   fetch("/api/admin/visits",{headers:{"Authorization":"Bearer "+t}})
-  .then(function(r){if(r.status===401){doLogout();return null;}return r.json();})
-  .then(function(d){BUSY=false;if(!d)return;ALL=(d.visits||[]).slice().reverse();doFilter();renderStats();renderRT();renderChart();})
-  .catch(function(){BUSY=false;});
+  .then(function(r){
+    if(r.status===401){dk("ip_detect_admin");doLogout();return null;}
+    if(!r.ok){BUSY=false;return null;}
+    return r.json();
+  })
+  .then(function(d){BUSY=false;RETRY=0;if(!d)return;ALL=(d.visits||[]).slice().reverse();doFilter();renderStats();renderRT();renderChart();})
+  .catch(function(){
+    BUSY=false;RETRY++;
+    if(RETRY<=3){setTimeout(loadData,3000*RETRY);}
+  });
 }
 function renderRT(){
   var now=Date.now(),h1=0,m5=0;
@@ -928,7 +938,7 @@ function renderTable(){
     var badges="";
     if(v.is_proxy||v.is_hosting)badges+='<span class="badge badge-proxy">VPN</span>';
     if(v.is_mobile)badges+='<span class="badge badge-mobile">Mobile</span>';
-    return '<tr><td>'+(s+i+1)+'</td><td class="ip-cell">'+v.ip+'</td><td>'+fl(v.country_code)+' '+(v.country||"")+'</td><td>'+(v.city||"-")+'</td><td style="font-size:12px">'+(v.isp||"-").substring(0,18)+'</td><td>'+badges+'</td><td style="font-size:11px">'+(v.time?new Date(v.time).toLocaleString():"-")+'</td><td><button class="btn-sm" onclick="showDetail('+(s+i)+')">Detail</button> <button class="btn-sm btn-rm" onclick="delVisit('+i+')">Del</button></td></tr>';
+    return '<tr><td>'+(s+i+1)+'</td><td class="ip-cell">'+v.ip+'</td><td>'+fl(v.country_code)+" "+(v.country||"")+'</td><td>'+(v.city||"-")+'</td><td style="font-size:12px">'+(v.isp||"-").substring(0,18)+'</td><td>'+badges+'</td><td style="font-size:11px">'+(v.time?new Date(v.time).toLocaleString():"-")+'</td><td><button class="btn-sm" onclick="showDetail('+(s+i)+')">Detail</button> <button class="btn-sm btn-rm" onclick="delVisit('+i+')">Del</button></td></tr>';
   }).join("");
   var pg=document.getElementById("pager");if(!pg)return;
   var h='<button onclick="goPg('+(PG-1)+')" '+(PG===1?"disabled":"")+'>Prev</button>';
@@ -941,7 +951,7 @@ function showDetail(idx){
   var v=FILT[idx];if(!v)return;
   var t=document.getElementById("detailTitle"),b=document.getElementById("detailBody");
   if(t)t.textContent=v.ip;
-  if(b)b.innerHTML='<div class="dg"><div class="di"><span class="dl">Country</span><span class="dv">'+fl(v.country_code)+' '+(v.country||"-")+'</span></div><div class="di"><span class="dl">City</span><span class="dv">'+(v.city||"-")+'</span></div><div class="di"><span class="dl">Region</span><span class="dv">'+(v.region||"-")+'</span></div><div class="di"><span class="dl">ISP</span><span class="dv">'+(v.isp||"-")+'</span></div><div class="di"><span class="dl">Org</span><span class="dv">'+(v.org||"-")+'</span></div><div class="di"><span class="dl">AS</span><span class="dv">'+(v.as||"-")+'</span></div><div class="di"><span class="dl">Zip</span><span class="dv">'+(v.zip||"-")+'</span></div><div class="di"><span class="dl">Coords</span><span class="dv">'+(v.latitude||0)+', '+(v.longitude||0)+'</span></div><div class="di"><span class="dl">Proxy</span><span class="dv">'+(v.is_proxy?"Yes":"No")+'</span></div><div class="di"><span class="dl">Mobile</span><span class="dv">'+(v.is_mobile?"Yes":"No")+'</span></div><div class="di"><span class="dl">Time</span><span class="dv">'+(v.time?new Date(v.time).toLocaleString():"-")+'</span></div></div>';
+  if(b)b.innerHTML='<div class="dg"><div class="di"><span class="dl">Country</span><span class="dv">'+fl(v.country_code)+" "+(v.country||"-")+'</span></div><div class="di"><span class="dl">City</span><span class="dv">'+(v.city||"-")+'</span></div><div class="di"><span class="dl">Region</span><span class="dv">'+(v.region||"-")+'</span></div><div class="di"><span class="dl">ISP</span><span class="dv">'+(v.isp||"-")+'</span></div><div class="di"><span class="dl">Org</span><span class="dv">'+(v.org||"-")+'</span></div><div class="di"><span class="dl">AS</span><span class="dv">'+(v.as||"-")+'</span></div><div class="di"><span class="dl">Zip</span><span class="dv">'+(v.zip||"-")+'</span></div><div class="di"><span class="dl">Coords</span><span class="dv">'+(v.latitude||0)+', '+(v.longitude||0)+'</span></div><div class="di"><span class="dl">Proxy</span><span class="dv">'+(v.is_proxy?"Yes":"No")+'</span></div><div class="di"><span class="dl">Mobile</span><span class="dv">'+(v.is_mobile?"Yes":"No")+'</span></div><div class="di"><span class="dl">Time</span><span class="dv">'+(v.time?new Date(v.time).toLocaleString():"-")+'</span></div></div>';
   document.getElementById("detailModal").style.display="flex";
 }
 function delVisit(idx){
@@ -962,7 +972,23 @@ function doExport(){
 }
 if("serviceWorker" in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
 document.getElementById("pwdInput").addEventListener("keydown",function(ev){if(ev.key==="Enter")doLogin();});
-(function(){var t=ck("ip_detect_admin");if(t){fetch("/api/admin/visits",{headers:{"Authorization":"Bearer "+t}}).then(function(r){if(r.ok){enterAdmin();}else{dk("ip_detect_admin");}}).catch(function(){});}})();</script>
+(function(){
+  var t=ck("ip_detect_admin");
+  if(!t)return;
+  var lo=document.getElementById("loadingOverlay");
+  if(lo)lo.classList.add("show");
+  var tries=0;
+  function tryAutoLogin(){
+    fetch("/api/admin/visits",{headers:{"Authorization":"Bearer "+t}})
+    .then(function(r){
+      if(r.ok){if(lo)lo.classList.remove("show");enterAdmin();}
+      else if(r.status===401){dk("ip_detect_admin");if(lo)lo.classList.remove("show");}
+      else{tries++;if(tries<5){setTimeout(tryAutoLogin,3000);}else{if(lo)lo.classList.remove("show");}}
+    })
+    .catch(function(){tries++;if(tries<5){setTimeout(tryAutoLogin,3000);}else{if(lo)lo.classList.remove("show");}});
+  }
+  tryAutoLogin();
+})();</script>
 </body>
 </html>"""
 
