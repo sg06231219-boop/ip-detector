@@ -112,16 +112,16 @@ def _record_visit(ip: str, location: dict, user_agent: str = "", referer: str = 
                 pass
     visit = {
         "ip": ip,
-        "country": location.get("country", "未知"),
+        "country": (location.get("country") or "未知"),
         "country_code": location.get("country_code", ""),
-        "city": location.get("city", "未知"),
-        "region": location.get("region_name", "未知"),
+        "city": (location.get("city") or "未知"),
+        "region": (location.get("region_name") or "未知"),
         "latitude": location.get("latitude"),
         "longitude": location.get("longitude"),
-        "timezone": location.get("timezone", "未知"),
-        "isp": location.get("isp", "未知"),
+        "timezone": (location.get("timezone") or "未知"),
+        "isp": (location.get("isp") or "未知"),
         "org": location.get("org", ""),
-        "as": location.get("as", "未知"),
+        "as": (location.get("as") or "未知"),
         "zip": location.get("zip", ""),
         "is_proxy": location.get("is_proxy", False),
         "is_hosting": location.get("is_hosting", False),
@@ -993,6 +993,19 @@ document.getElementById("pwdInput").addEventListener("keydown",function(ev){if(e
 </html>"""
 
 
+
+# Country code to continent mapping (ip-api doesn't always return continent)
+COUNTRY_CONTINENT = {
+    "CN": "亚洲", "JP": "亚洲", "KR": "亚洲", "IN": "亚洲",
+    "TH": "亚洲", "VN": "亚洲", "PH": "亚洲", "MY": "亚洲",
+    "ID": "亚洲", "SG": "亚洲", "TW": "亚洲", "HK": "亚洲",
+    "US": "北美洲", "CA": "北美洲", "MX": "北美洲",
+    "BR": "南美洲", "AR": "南美洲", "GB": "欧洲",
+    "FR": "欧洲", "DE": "欧洲", "IT": "欧洲", "RU": "欧洲",
+    "AU": "大洋洲", "NZ": "大洋洲", "EG": "非洲",
+    "ZA": "非洲", "SA": "中东", "AE": "中东",
+}
+
 # ========== 路由 ==========
 
 @app.on_event("startup")
@@ -1005,6 +1018,12 @@ async def startup():
 async def get_ip_info(request: Request):
     ip = _get_client_ip(request)
     location = await _fetch_location(ip)
+
+    # Fill missing fields with fallbacks
+    if not location.get("continent"):
+        location["continent"] = COUNTRY_CONTINENT.get(str(location.get("country_code", "")).upper(), "未知")
+    if not location.get("zip"):
+        location["zip"] = "未知"
     ua = request.headers.get("user-agent", "")
     referer = request.headers.get("referer", "")
     _record_visit(ip, location, ua, referer)
@@ -1038,18 +1057,18 @@ async def get_ip_info(request: Request):
     for old, new in [
         ("__IP__", ip), ("__TIMESTAMP__", timestamp),
         ("__COUNTRY_FLAG__", country_flag),
-        ("__COUNTRY__", location.get("country", "未知")),
-        ("__COUNTRY_CODE__", location.get("country_code", "未知")),
-        ("__CITY__", location.get("city", "未知")),
-        ("__REGION__", location.get("region_name", "未知")),
-        ("__REGION_NAME__", location.get("region_name", "未知")),
+        ("__COUNTRY__", (location.get("country") or "未知")),
+        ("__COUNTRY_CODE__", (location.get("country_code") or "未知")),
+        ("__CITY__", (location.get("city") or "未知")),
+        ("__REGION__", (location.get("region_name") or "未知")),
+        ("__REGION_NAME__", (location.get("region_name") or "未知")),
         ("__LAT__", str(lat)), ("__LON__", str(lon)),
-        ("__TIMEZONE__", location.get("timezone", "未知")),
-        ("__ISP__", location.get("isp", "未知")),
-        ("__AS__", location.get("as", "未知")),
-        ("__ZIP__", location.get("zip", "未知")),
-        ("__ORG__", location.get("org", "未知")),
-        ("__CONTINENT__", location.get("continent", "未知")),
+        ("__TIMEZONE__", (location.get("timezone") or "未知")),
+        ("__ISP__", (location.get("isp") or "未知")),
+        ("__AS__", (location.get("as") or "未知")),
+        ("__ZIP__", (location.get("zip") or "未知")),
+        ("__ORG__", (location.get("org") or "未知")),
+        ("__CONTINENT__", (location.get("continent") or "未知")),
         ("__PROXY_STATUS__", proxy_status),
         ("__MAP_BBOX__", map_bbox),
         ("__JSON_DATA__", json_str.replace("<", "&lt;").replace(">", "&gt;")),
@@ -1063,6 +1082,12 @@ async def get_ip_info(request: Request):
 async def get_info_api(request: Request):
     ip = _get_client_ip(request)
     location = await _fetch_location(ip)
+
+    # Fill missing fields with fallbacks
+    if not location.get("continent"):
+        location["continent"] = COUNTRY_CONTINENT.get(str(location.get("country_code", "")).upper(), "未知")
+    if not location.get("zip"):
+        location["zip"] = "未知"
     return {"ip": ip, "location": location or None, "error": None}
 
 
@@ -1078,6 +1103,12 @@ async def query_ip(ip: str = Query(...)):
     except ValueError:
         return {"error": "IP格式错误", "ip": ip, "location": None}
     location = await _fetch_location(ip)
+
+    # Fill missing fields with fallbacks
+    if not location.get("continent"):
+        location["continent"] = COUNTRY_CONTINENT.get(str(location.get("country_code", "")).upper(), "未知")
+    if not location.get("zip"):
+        location["zip"] = "未知"
     if not location:
         return {"error": "查询失败", "ip": ip, "location": None}
     return {"ip": ip, "location": location, "error": None}
