@@ -6,15 +6,11 @@ import json
 import io
 import csv
 import time
-import asyncio
 import base64
 from datetime import datetime
 from typing import Optional, Dict, Any
 
 app = FastAPI()
-
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ========== 配置 ==========
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Lys13579")
@@ -22,11 +18,12 @@ GITHUB_PAT = os.environ.get("GITHUB_PAT", "")
 GITHUB_REPO = "sg06231219-boop/ip-detector"
 GITHUB_BRANCH = "data"
 VISITS_PATH = "data/visits.json"
-# Save throttle: batch changes before pushing to GitHub
+
+# Save throttle: batch N changes before pushing to GitHub
 _pending_saves = 0
-_SAVE_THRESHOLD = 5
+_SAVE_THRESHOLD = 5  # Push every 5 visits
 _last_save_time = 0.0
-_SAVE_INTERVAL = 120
+_SAVE_INTERVAL = 120  # Min 120s between pushes
 
 # ========== IP位置缓存（内存，1小时TTL） ==========
 _location_cache: Dict[str, Any] = {}
@@ -35,38 +32,49 @@ LOCATION_CACHE_TTL = 3600  # 1小时
 
 # ========== 数据存储（GitHub Contents API 持久化） ==========
 def _github_get_visits() -> list:
-    """Read visits.json from GitHub (3 retries)"""
-    for attempt in range(3):
-        try:
-            headers = {"Authorization": f"token {GITHUB_PAT}", "Accept": "application/vnd.github.v3+json"}
-            url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{VISITS_PATH}?ref={GITHUB_BRANCH}"
-            resp = httpx.get(url, headers=headers, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json()
-                decoded = base64.b64decode(data["content"]).decode("utf-8")
-                visits = json.loads(decoded)
-                return visits if isinstance(visits, list) else []
-            if resp.status_code == 404: return []
-        except Exception:
-            if attempt < 2: import time as _t; _t.sleep(1)
+    """从GitHub仓库读取visits.json"""
+    try:
+        headers = {
+            "Authorization": f"token {GITHUB_PAT}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{VISITS_PATH}?ref={GITHUB_BRANCH}"
+        resp = httpx.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            content = base64.b64decode(data["content"]).decode("utf-8")
+            visits = json.loads(content)
+            return visits if isinstance(visits, list) else []
+    except Exception:
+        pass
     return []
 
 def _github_save_visits(visits: list) -> bool:
-    """Save visits.json to GitHub (3 retries)"""
-    for attempt in range(3):
-        try:
-            headers = {"Authorization": f"token {GITHUB_PAT}", "Accept": "application/vnd.github.v3+json"}
-            url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{VISITS_PATH}?ref={GITHUB_BRANCH}"
-            resp = httpx.get(url, headers=headers, timeout=15)
-            sha = resp.json().get("sha") if resp.status_code == 200 else None
-            encoded = base64.b64encode(json.dumps(visits, ensure_ascii=False, indent=2).encode("utf-8")).decode("utf-8")
-            body = {"message": f"Update visits ({len(visits)})", "content": encoded, "branch": GITHUB_BRANCH}
-            if sha: body["sha"] = sha
-            resp = httpx.put(url, headers=headers, json=body, timeout=20)
-            if resp.status_code in (200, 201): return True
-            if resp.status_code == 409: continue
-        except Exception:
-            if attempt < 2: import time as _t; _t.sleep(1)
+    """保存visits.json到GitHub仓库"""
+    try:
+        headers = {
+            "Authorization": f"token {GITHUB_PAT}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        # 先获取当前文件sha
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{VISITS_PATH}?ref={GITHUB_BRANCH}"
+        resp = httpx.get(url, headers=headers, timeout=10)
+        sha = resp.json().get("sha") if resp.status_code == 200 else None
+
+        content = base64.b64encode(
+            json.dumps(visits, ensure_ascii=False, indent=2).encode("utf-8")
+        ).decode("utf-8")
+        body = {
+            "message": f"Update visits.json ({len(visits)} records)",
+            "content": content,
+            "branch": GITHUB_BRANCH,
+        }
+        if sha:
+            body["sha"] = sha
+        resp = httpx.put(url, headers=headers, json=body, timeout=15)
+        return resp.status_code in (200, 201)
+    except Exception:
+        pass
     return False
 
 # 内存缓存（避免每次请求都读GitHub）
@@ -86,12 +94,14 @@ def _load_visits() -> list:
 
 def _save_visits(visits: list, force: bool = False):
     global _visits_cache, _visits_cache_time, _pending_saves, _last_save_time
+    # Cap at 2000 records
     if len(visits) > 2000:
         visits = visits[-2000:]
     _visits_cache = visits
     _visits_cache_time = time.time()
     _pending_saves += 1
     now = time.time()
+    # Throttle: push only after N changes or time interval; force=True for admin ops
     should_push = force or _pending_saves >= _SAVE_THRESHOLD or (now - _last_save_time) >= _SAVE_INTERVAL
     if should_push:
         _pending_saves = 0
@@ -99,10 +109,10 @@ def _save_visits(visits: list, force: bool = False):
         _github_save_visits(visits)
 
 def _record_visit(ip: str, location: dict, user_agent: str = "", referer: str = ""):
-    """记录访问，同IP 5分钟内去重"""
+    """Record visit, deduplicate same IP within 5 minutes"""
     visits = _load_visits()
     now = datetime.now()
-    for v in reversed(visits[-50:]):
+    for v in reversed(visits[-50:]):  # 只检查最近50条
         if v.get("ip") == ip:
             try:
                 last_time = datetime.strptime(v["time"], "%Y-%m-%d %H:%M:%S")
@@ -112,21 +122,15 @@ def _record_visit(ip: str, location: dict, user_agent: str = "", referer: str = 
                 pass
     visit = {
         "ip": ip,
-        "country": (location.get("country") or "未知"),
+        "country": location.get("country", "未知"),
         "country_code": location.get("country_code", ""),
-        "city": (location.get("city") or "未知"),
-        "region": (location.get("region_name") or "未知"),
+        "city": location.get("city", "未知"),
+        "region": location.get("region_name", "未知"),
         "latitude": location.get("latitude"),
         "longitude": location.get("longitude"),
-        "timezone": (location.get("timezone") or "未知"),
-        "isp": (location.get("isp") or "未知"),
-        "org": location.get("org", ""),
-        "as": (location.get("as") or "未知"),
-        "zip": location.get("zip", ""),
-        "is_proxy": location.get("is_proxy", False),
-        "is_hosting": location.get("is_hosting", False),
-        "is_mobile": location.get("is_mobile", False),
-        "continent": location.get("continent", ""),
+        "timezone": location.get("timezone", "未知"),
+        "isp": location.get("isp", "未知"),
+        "as": location.get("as", "未知"),
         "user_agent": user_agent[:200] if user_agent else "",
         "referer": referer[:200] if referer else "",
         "time": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -151,19 +155,15 @@ def _get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "0.0.0.0"
 
 async def _fetch_location(ip: str) -> dict:
-    """查询IP地理位置（双API源 + 内存缓存）"""
+    """查询IP地理位置（带内存缓存）"""
     now = time.time()
     cache_key = f"loc_{ip}"
     if cache_key in _location_cache:
         if now - _location_cache_ttl.get(cache_key, 0) < LOCATION_CACHE_TTL:
             return _location_cache[cache_key]
-    
-    result = {}
-    
-    # 源1: ip-api.com (免费45次/分, 中文, 含proxy/hosting/mobile检测)
     try:
         async with httpx.AsyncClient() as client:
-            fields = "status,message,country,countryCode,regionName,city,lat,lon,timezone,isp,org,as,zip,proxy,hosting,mobile"
+            fields = "status,message,country,countryCode,city,lat,lon,timezone,isp,as,regionName,zip"
             resp = await client.get(
                 f"http://ip-api.com/json/{ip}?lang=zh-CN&fields={fields}",
                 timeout=5.0,
@@ -173,62 +173,22 @@ async def _fetch_location(ip: str) -> dict:
                 if data.get("status") == "success":
                     result = {
                         "country": data.get("country", "未知"),
-                        "country_code": data.get("countryCode", ""),
+                        "country_code": data.get("countryCode", "未知"),
                         "city": data.get("city", "未知"),
-                        "latitude": data.get("lat", 0),
-                        "longitude": data.get("lon", 0),
+                        "latitude": data.get("lat", "未知"),
+                        "longitude": data.get("lon", "未知"),
                         "timezone": data.get("timezone", "未知"),
                         "isp": data.get("isp", "未知"),
-                        "org": data.get("org", ""),
                         "as": data.get("as", "未知"),
                         "region_name": data.get("regionName", "未知"),
-                        "zip": data.get("zip", ""),
-                        "is_proxy": data.get("proxy", False),
-                        "is_hosting": data.get("hosting", False),
-                        "is_mobile": data.get("mobile", False),
-                        "continent": "",
-                        "source": "ip-api",
+                        "zip": data.get("zip", "未知"),
                     }
                     _location_cache[cache_key] = result
                     _location_cache_ttl[cache_key] = now
                     return result
     except Exception:
         pass
-    
-    # 源2: freeipapi.com (免费, 补充大洲/语言/代理信息)
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"https://freeipapi.com/api/json/{ip}",
-                timeout=8.0,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                result = {
-                    "country": data.get("countryName", "未知"),
-                    "country_code": data.get("countryCode", ""),
-                    "city": data.get("cityName", "未知"),
-                    "latitude": data.get("latitude", 0),
-                    "longitude": data.get("longitude", 0),
-                    "timezone": (data.get("timeZones") or ["未知"])[0] if isinstance(data.get("timeZones"), list) else "未知",
-                    "isp": data.get("asnOrganization", "未知"),
-                    "org": data.get("asnOrganization", ""),
-                    "as": "AS" + str(data.get("asn", "")),
-                    "region_name": data.get("regionName", "未知"),
-                    "zip": data.get("zipCode", ""),
-                    "is_proxy": data.get("isProxy", False),
-                    "is_hosting": False,
-                    "is_mobile": False,
-                    "continent": data.get("continentName", ""),
-                    "source": "freeipapi",
-                }
-                _location_cache[cache_key] = result
-                _location_cache_ttl[cache_key] = now
-                return result
-    except Exception:
-        pass
-    
-    return result
+    return {}
 
 def get_country_flag(code: str) -> str:
     if not code or len(code) != 2:
@@ -252,7 +212,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <meta property="og:title" content="IP位置检测 - 智能定位工具">
     <meta property="og:description" content="一键检测您的IP地址、地理位置、ISP信息，免费使用">
     <meta property="og:type" content="website">
-    <meta property="og:url" content="https://ip-detector-lu2p.onrender.com">
+    <meta property="og:url" content="https://ip-detector-dxxa.onrender.com">
     <meta name="twitter:card" content="summary">
     <meta name="theme-color" content="#0a0e27">
     <link rel="manifest" href="/manifest.json">
@@ -409,8 +369,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .card-isp .card-icon { background: rgba(105,240,174,0.15); }
         .card-as .card-icon { background: rgba(255,145,0,0.15); }
         .card-region .card-icon { background: rgba(255,82,82,0.15); }
-        .card-proxy .card-icon { background: rgba(255,215,64,0.15); }
-        .card-continent .card-icon { background: rgba(0,230,118,0.15); }
         .card-browser .card-icon { background: rgba(234,128,252,0.15); }
         .map-section { margin: 30px 0; animation: fadeInUp 0.6s ease-out 0.8s both; }
         .map-section h3 { font-size: 16px; color: var(--text-secondary); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
@@ -476,21 +434,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             .query-box { flex-direction: column; }
             .query-box button { width: 100%; }
         }
-    
-    .live-visitors{margin-top:16px;display:flex;justify-content:center;gap:12px;flex-wrap:wrap}
-    .live-visitors-section{margin:20px 0;animation:fadeInUp .6s ease-out .25s both}
-    .lv-header{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:var(--text-secondary);margin-bottom:12px}
-    .lv-dot{width:8px;height:8px;border-radius:50%;background:var(--success);animation:pulse 2s infinite}
-    .lv-list{display:flex;gap:10px;overflow-x:auto;padding-bottom:8px;scrollbar-width:thin}
-    .lv-card{background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:12px 16px;min-width:180px;flex-shrink:0;transition:all .3s;cursor:default}
-    .lv-card:hover{border-color:rgba(124,77,255,.4);transform:translateY(-2px);box-shadow:0 8px 24px rgba(124,77,255,.15)}
-    .lv-card-top{display:flex;align-items:center;gap:8px;margin-bottom:6px}
-    .lv-card .lv-flag{font-size:22px}
-    .lv-card .lv-ip{color:var(--accent3);font-family:'Courier New',monospace;font-weight:700;font-size:13px}
-    .lv-card .lv-loc{color:var(--text-secondary);font-size:12px}
-    .lv-card .lv-time{color:var(--text-muted);font-size:11px;margin-top:4px}
-    .lv-card .lv-live{width:6px;height:6px;border-radius:50%;background:var(--success);animation:pulse 2s infinite;margin-left:auto}
-</style>
+    </style>
 </head>
 <body>
     <canvas id="particles"></canvas>
@@ -507,10 +451,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <span class="status-dot"></span>
                 检测完成 · __TIMESTAMP__
             </div>
-        </div>
-        <div id="liveVisitors" class="live-visitors-section">
-            <div class="lv-header"><span class="lv-dot"></span> 实时访客动态</div>
-            <div id="lvList" class="lv-list"></div>
         </div>
         <div class="query-section">
             <div class="query-box">
@@ -560,16 +500,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <div class="card-value" style="font-size:16px;">__REGION_NAME__</div>
                 <div class="card-sub">邮编: __ZIP__</div>
             </div>
-                        <div class="info-card card-continent">
-                <div class="card-header"><div class="card-icon">🌏</div><div class="card-title">大洲</div></div>
-                <div class="card-value" style="font-size:16px;">__CONTINENT__</div>
-                <div class="card-sub">组织: __ORG__</div>
-            </div>
-            <div class="info-card card-proxy">
-                <div class="card-header"><div class="card-icon">🛡️</div><div class="card-title">安全检测</div></div>
-                <div class="card-value" id="proxyStatus">__PROXY_STATUS__</div>
-                <div class="card-sub">代理/VPN/云服务检测</div>
-            </div>
             <div class="info-card card-browser">
                 <div class="card-header"><div class="card-icon">🖥️</div><div class="card-title">您的浏览器</div></div>
                 <div class="card-value" style="font-size:14px;" id="browserInfo">检测中...</div>
@@ -594,7 +524,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <div class="json-content" id="jsonContent">__JSON_DATA__</div>
         </div>
         <div class="footer">
-            IP智能定位工具 · 数据来源 ip-api.com + freeipapi.com · 检测时间 __TIMESTAMP__<br>
+            IP智能定位工具 · 数据来源 ip-api.com · 检测时间 __TIMESTAMP__<br>
             <span style="opacity:0.5;">位置为大致估算，不代表精确住址</span><br>
             <a href="/admin" style="color:var(--text-muted);font-size:11px;margin-top:4px;display:inline-block">🔒 管理后台</a>
         </div>
@@ -708,21 +638,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     function showToast(m){var t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},2000)}
     function toggleJSON(b){b.classList.toggle('open');document.getElementById('jsonContent').classList.toggle('show')}
-    
-    // Live visitors on homepage
-    function loadLive(){
-      fetch('/api/stats').then(function(r){return r.json();}).then(function(d){
-        var el=document.getElementById('lvList');if(!el||!d.recent||!d.recent.length){var sec=document.getElementById('liveVisitors');if(sec)sec.style.display='none';return;}
-        var sec=document.getElementById('liveVisitors');if(sec)sec.style.display='';
-        el.innerHTML=d.recent.slice(0,8).reverse().map(function(v){
-          var fl='';try{if(v.country_code&&v.country_code.length===2){var o=127397;fl=String.fromCodePoint(v.country_code.charCodeAt(0)+o)+String.fromCodePoint(v.country_code.charCodeAt(1)+o);}}catch(e){}
-          var ago=Math.round((Date.now()-new Date(v.time).getTime())/60000);
-          return '<div class="lv-card"><div class="lv-card-top"><span class="lv-flag">'+(fl||'🌐')+'</span><span class="lv-ip">'+v.ip+'</span><span class="lv-live"></span></div><div class="lv-loc">'+(v.city||'?')+', '+(v.country||'?')+'</div><div class="lv-time">'+(ago<1?'刚刚':ago+'分钟前')+'</div></div>';
-        }).join('');
-      }).catch(function(){});
-    }
-    loadLive();setInterval(loadLive,15000);
-</script>
+    </script>
 </body>
 </html>"""
 
@@ -731,299 +647,365 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 ADMIN_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>IP Detector - Admin</title>
-<style>*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#0a0e27;color:#e8eaf6;min-height:100vh}
-.login-wrap{display:flex;justify-content:center;align-items:center;min-height:100vh}
-.login-box{background:#111640;border:1px solid rgba(124,77,255,.3);border-radius:24px;padding:48px;width:380px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.4)}
-.login-box .logo{font-size:48px;margin-bottom:16px}
-.login-box h2{margin-bottom:8px;font-size:24px;background:linear-gradient(135deg,#7c4dff,#448aff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.login-box .sub{color:#5c6bc0;font-size:13px;margin-bottom:24px}
-.login-box input{width:100%;padding:14px 18px;border-radius:12px;border:1px solid rgba(124,77,255,.3);background:rgba(255,255,255,.05);color:#e8eaf6;font-size:16px;outline:none;margin-bottom:16px;transition:border-color .3s}
-.login-box input:focus{border-color:#7c4dff;box-shadow:0 0 0 3px rgba(124,77,255,.15)}
-.login-box button{width:100%;padding:14px;border-radius:12px;border:none;background:linear-gradient(135deg,#7c4dff,#448aff);color:#fff;font-size:16px;font-weight:600;cursor:pointer;transition:transform .2s,box-shadow .2s}
-.login-box button:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(124,77,255,.3)}
-.login-box button:disabled{opacity:.5;cursor:not-allowed;transform:none}
-.err{color:#ff5252;font-size:13px;margin-top:8px;display:none}
-.admin-wrap{display:none;padding:24px;max-width:1300px;margin:0 auto}
-.admin-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px}
-.admin-header h2{font-size:22px;display:flex;align-items:center;gap:10px}
-.header-btns{display:flex;gap:8px}
-.btn{padding:8px 18px;border-radius:10px;border:1px solid rgba(124,77,255,.3);background:rgba(255,255,255,.05);color:#9fa8da;cursor:pointer;font-size:13px;transition:all .2s;display:flex;align-items:center;gap:6px}
-.btn:hover{border-color:#7c4dff;color:#7c4dff;background:rgba(124,77,255,.1)}
-.btn-danger{border-color:rgba(255,82,82,.3);color:#ff5252}.btn-danger:hover{background:rgba(255,82,82,.15)}
-.rt-bar{background:rgba(105,240,174,.08);border:1px solid rgba(105,240,174,.2);border-radius:14px;padding:12px 20px;margin-bottom:20px;display:flex;align-items:center;gap:10px;font-size:13px}
-.rt-dot{width:8px;height:8px;border-radius:50%;background:#69f0ae;animation:bk 1.5s infinite}
-@keyframes bk{0%,100%{opacity:1}50%{opacity:.3}}
-.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:24px}
-.stat{background:linear-gradient(145deg,#111640,#0d1033);border:1px solid rgba(124,77,255,.15);border-radius:14px;padding:18px 14px;text-align:center;transition:transform .2s}
-.stat:hover{transform:translateY(-2px)}
-.stat .num{font-size:28px;font-weight:800;background:linear-gradient(135deg,#7c4dff,#448aff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.stat .lbl{font-size:10px;color:#5c6bc0;text-transform:uppercase;letter-spacing:1.5px;margin-top:4px}
-.chart-sec{background:linear-gradient(145deg,#111640,#0d1033);border:1px solid rgba(124,77,255,.15);border-radius:14px;padding:20px;margin-bottom:24px}
-.chart-sec h3{font-size:14px;color:#7c4dff;margin-bottom:16px;text-transform:uppercase;letter-spacing:1px}
-.bar-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
-.bar-label{min-width:100px;font-size:12px;color:#9fa8da;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.bar-track{flex:1;height:20px;background:rgba(255,255,255,.05);border-radius:10px;overflow:hidden}
-.bar-fill{height:100%;background:linear-gradient(90deg,#7c4dff,#448aff);border-radius:10px;transition:width .5s ease;min-width:4px}
-.bar-val{min-width:30px;font-size:12px;color:#18ffff;font-weight:700;text-align:right}
-.filters{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
-.filters input,.filters select{padding:8px 14px;border-radius:10px;border:1px solid rgba(124,77,255,.2);background:rgba(255,255,255,.05);color:#e8eaf6;font-size:13px;outline:none;transition:border-color .3s}
-.filters input:focus,.filters select:focus{border-color:#7c4dff}
-.filters select option{background:#111640}
-.proxy-toggle{display:flex;align-items:center;gap:6px;font-size:13px;color:#ff5252;cursor:pointer}
-.proxy-toggle input{accent-color:#ff5252}
-.tbl{width:100%;border-collapse:collapse;font-size:13px}
-.tbl th{text-align:left;padding:12px 8px;border-bottom:1px solid rgba(124,77,255,.2);color:#5c6bc0;font-size:10px;text-transform:uppercase;letter-spacing:1.5px}
-.tbl td{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.03)}
-.tbl tr:hover{background:rgba(124,77,255,.05)}
-.ip-cell{color:#18ffff;font-family:'Courier New',monospace;font-weight:600}
-.badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;text-transform:uppercase;margin-right:4px}
-.badge-proxy{background:rgba(255,82,82,.15);color:#ff5252;border:1px solid rgba(255,82,82,.3)}
-.badge-mobile{background:rgba(255,215,64,.15);color:#ffd740;border:1px solid rgba(255,215,64,.3)}
-.btn-sm{padding:4px 10px;border-radius:6px;border:1px solid rgba(124,77,255,.3);background:transparent;color:#9fa8da;cursor:pointer;font-size:11px;transition:all .2s}
-.btn-sm:hover{border-color:#7c4dff;color:#7c4dff;background:rgba(124,77,255,.1)}
-.btn-rm{border-color:rgba(255,82,82,.3);color:#ff5252}.btn-rm:hover{background:rgba(255,82,82,.15)}
-.pager{display:flex;gap:6px;justify-content:center;margin-top:20px;flex-wrap:wrap}
-.pager button{padding:6px 12px;border-radius:8px;border:1px solid rgba(124,77,255,.2);background:transparent;color:#9fa8da;cursor:pointer;font-size:13px;transition:all .2s}
-.pager button.on{background:#7c4dff;color:#fff;border-color:#7c4dff}
-.pager button:disabled{opacity:.3;cursor:not-allowed}
-.modal-bg{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.75);backdrop-filter:blur(4px);justify-content:center;align-items:center;z-index:999}
-.modal{background:linear-gradient(145deg,#111640,#0d1033);border:1px solid rgba(124,77,255,.3);border-radius:20px;padding:28px;max-width:600px;width:92%;max-height:85vh;overflow-y:auto;animation:mi .3s ease}
-@keyframes mi{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}
-.modal h3{margin-bottom:20px;font-size:18px;display:flex;align-items:center;gap:8px}
-.dg{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.di{background:rgba(255,255,255,.03);border-radius:10px;padding:12px}
-.dl{font-size:10px;color:#5c6bc0;text-transform:uppercase;letter-spacing:1px;display:block;margin-bottom:4px}
-.dv{font-size:14px;color:#e8eaf6;word-break:break-all}
-.modal-close{display:block;margin-top:20px;padding:12px 20px;border-radius:12px;border:none;background:linear-gradient(135deg,#7c4dff,#448aff);color:#fff;cursor:pointer;width:100%;font-size:14px;font-weight:600;transition:transform .2s}
-.modal-close:hover{transform:translateY(-1px)}
-.ver{color:#5c6bc0;font-size:11px;margin-top:16px;text-align:center}
-.loading-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(10,14,39,.9);z-index:1000;justify-content:center;align-items:center;font-size:18px;color:#7c4dff}
-.loading-overlay.show{display:flex}
-@media(max-width:768px){.dg{grid-template-columns:1fr}.stats-row{grid-template-columns:repeat(3,1fr)}.bar-label{min-width:60px;font-size:11px}}</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>管理后台 - IP位置检测</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔒</text></svg>">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <style>
+        :root {
+            --bg-primary: #0a0e27; --bg-secondary: #111640; --bg-card: rgba(255,255,255,0.04);
+            --bg-card-hover: rgba(255,255,255,0.08); --text-primary: #e8eaf6; --text-secondary: #9fa8da;
+            --text-muted: #5c6bc0; --accent: #7c4dff; --accent2: #448aff; --accent3: #18ffff;
+            --border: rgba(124,77,255,0.2); --success: #69f0ae; --danger: #ff5252; --warning: #ffd740;
+        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-primary); color: var(--text-primary); min-height: 100vh; }
+        .login-wrap { display:flex; justify-content:center; align-items:center; min-height:100vh; padding:20px; }
+        .login-box { background:var(--bg-secondary); border:1px solid var(--border); border-radius:20px; padding:40px; max-width:400px; width:100%; text-align:center; }
+        .login-box h2 { color:var(--accent3); margin-bottom:8px; font-size:24px; }
+        .login-box p { color:var(--text-muted); font-size:13px; margin-bottom:24px; }
+        .login-box input { width:100%; padding:14px 16px; border-radius:12px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:15px; margin-bottom:16px; outline:none; transition:border-color 0.3s; }
+        .login-box input:focus { border-color:var(--accent); }
+        .login-box button { width:100%; padding:14px; border-radius:12px; border:none; background:linear-gradient(135deg,var(--accent),var(--accent2)); color:white; font-size:15px; font-weight:600; cursor:pointer; transition:transform 0.2s,box-shadow 0.2s; }
+        .login-box button:hover { transform:translateY(-2px); box-shadow:0 8px 24px rgba(124,77,255,0.3); }
+        .login-error { color:var(--danger); font-size:13px; margin-top:12px; display:none; }
+        .admin-wrap { max-width:1400px; margin:0 auto; padding:20px; }
+        .admin-header { display:flex; justify-content:space-between; align-items:center; padding:20px 0; border-bottom:1px solid var(--border); margin-bottom:24px; flex-wrap:wrap; gap:12px; }
+        .admin-header h1 { font-size:22px; background:linear-gradient(135deg,var(--accent),var(--accent3)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+        .admin-header .actions { display:flex; gap:8px; flex-wrap:wrap; }
+        .admin-btn { padding:8px 14px; border-radius:8px; border:none; cursor:pointer; font-size:13px; font-weight:600; transition:all 0.2s; }
+        .btn-logout { background:rgba(255,82,82,0.15); color:var(--danger); border:1px solid rgba(255,82,82,0.3); }
+        .btn-logout:hover { background:rgba(255,82,82,0.3); }
+        .btn-refresh { background:rgba(105,240,174,0.15); color:var(--success); border:1px solid rgba(105,240,174,0.3); }
+        .btn-refresh:hover { background:rgba(105,240,174,0.3); }
+        .btn-danger { background:rgba(255,82,82,0.15); color:var(--danger); border:1px solid rgba(255,82,82,0.3); }
+        .btn-danger:hover { background:rgba(255,82,82,0.3); }
+        .btn-export { background:rgba(24,255,255,0.15); color:var(--accent3); border:1px solid rgba(24,255,255,0.3); }
+        .btn-export:hover { background:rgba(24,255,255,0.3); }
+        .live-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--success); animation:pulse 2s infinite; margin-left:8px; }
+        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+        .stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:20px; }
+        .stat-card { background:var(--bg-card); border:1px solid var(--border); border-radius:14px; padding:16px; text-align:center; }
+        .stat-card .stat-value { font-size:28px; font-weight:800; background:linear-gradient(135deg,var(--accent3),var(--accent2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+        .stat-card .stat-label { color:var(--text-muted); font-size:12px; margin-top:4px; }
+        .viz-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px; }
+        .viz-card { background:var(--bg-card); border:1px solid var(--border); border-radius:14px; padding:16px; }
+        .viz-card h3 { font-size:13px; color:var(--text-secondary); margin-bottom:10px; }
+        .viz-card canvas { width:100% !important; max-height:220px; }
+        #adminMap { height:280px; border-radius:10px; }
+        .toolbar { display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap; align-items:center; }
+        .toolbar input, .toolbar select { padding:9px 13px; border-radius:9px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:13px; outline:none; }
+        .toolbar input:focus, .toolbar select:focus { border-color:var(--accent); }
+        .toolbar input { flex:1; min-width:180px; }
+        .table-wrap { background:var(--bg-card); border:1px solid var(--border); border-radius:14px; overflow:hidden; }
+        table { width:100%; border-collapse:collapse; font-size:12px; }
+        thead { background:rgba(124,77,255,0.1); }
+        th { padding:12px 10px; text-align:left; color:var(--text-muted); font-size:10px; text-transform:uppercase; letter-spacing:1px; border-bottom:1px solid var(--border); white-space:nowrap; }
+        td { padding:10px; border-bottom:1px solid rgba(124,77,255,0.06); color:var(--text-secondary); word-break:break-all; }
+        tr:hover td { background:var(--bg-card-hover); }
+        tr:last-child td { border-bottom:none; }
+        .ip-cell { font-family:'Courier New',monospace; color:var(--accent3); font-weight:600; cursor:pointer; }
+        .ip-cell:hover { text-decoration:underline; }
+        .flag-cell { font-size:16px; }
+        .time-cell { white-space:nowrap; color:var(--text-muted); font-size:11px; }
+        .ua-cell { max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; }
+        .map-link { color:var(--accent2); text-decoration:none; font-size:11px; }
+        .map-link:hover { text-decoration:underline; }
+        .detail-link { color:var(--accent); cursor:pointer; font-size:11px; }
+        .detail-link:hover { text-decoration:underline; }
+        .del-link { color:var(--danger); cursor:pointer; font-size:11px; margin-left:6px; }
+        .del-link:hover { text-decoration:underline; }
+        .pagination { display:flex; justify-content:center; align-items:center; gap:6px; padding:16px; color:var(--text-muted); font-size:13px; flex-wrap:wrap; }
+        .pagination button { padding:5px 12px; border-radius:7px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); cursor:pointer; font-size:12px; transition:all 0.2s; }
+        .pagination button:hover { border-color:var(--accent); }
+        .pagination button.active { background:var(--accent); border-color:var(--accent); color:white; }
+        .pagination button:disabled { opacity:0.3; cursor:not-allowed; }
+        .empty { text-align:center; padding:50px 20px; color:var(--text-muted); }
+        .empty .emoji { font-size:44px; margin-bottom:10px; }
+        .modal-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:200; display:flex; justify-content:center; align-items:center; }
+        .modal-box { background:var(--bg-secondary); border:1px solid var(--border); border-radius:16px; padding:24px; max-width:600px; width:95%; max-height:90vh; overflow-y:auto; }
+        .modal-box h3 { color:var(--accent3); margin-bottom:16px; font-size:18px; }
+        .modal-close { float:right; background:none; border:none; color:var(--text-muted); font-size:20px; cursor:pointer; }
+        .modal-close:hover { color:var(--text-primary); }
+        .modal-info { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+        .modal-row { background:var(--bg-card); border-radius:8px; padding:10px 12px; }
+        .modal-row .label { font-size:10px; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px; margin-bottom:4px; }
+        .modal-row .value { font-size:13px; color:var(--text-primary); word-break:break-all; }
+        .modal-map { margin-top:14px; border-radius:10px; overflow:hidden; height:200px; }
+        .modal-map iframe { width:100%; height:100%; border:none; filter:invert(0.9) hue-rotate(180deg) brightness(0.8) contrast(1.1); }
+        .confirm-modal { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:300; display:flex; justify-content:center; align-items:center; }
+        .confirm-box { background:var(--bg-secondary); border:1px solid var(--border); border-radius:14px; padding:28px; max-width:360px; width:90%; text-align:center; }
+        .confirm-box h3 { margin-bottom:10px; color:var(--danger); }
+        .confirm-box p { color:var(--text-secondary); font-size:13px; margin-bottom:20px; }
+        .confirm-box .btns { display:flex; gap:10px; justify-content:center; }
+        .confirm-box .btns button { padding:9px 22px; border-radius:8px; border:none; cursor:pointer; font-weight:600; font-size:13px; }
+        @media (max-width:900px) { .viz-grid { grid-template-columns:1fr; } .modal-info { grid-template-columns:1fr; } }
+        @media (max-width:600px) { .admin-wrap { padding:12px; } .stats-grid { grid-template-columns:repeat(2,1fr); } .modal-info { grid-template-columns:1fr; } table { font-size:10px; } th,td { padding:7px 5px; } .ua-cell { max-width:80px; } }
+    </style>
 </head>
 <body>
-<div id="loginWrap" class="login-wrap">
-  <div class="login-box">
-    <div class="logo">🛡️</div>
-    <h2>Admin Dashboard</h2>
-    <div class="sub">IP Detector Management Console</div>
-    <input type="password" id="pwdInput" placeholder="Enter password" autocomplete="current-password">
-    <button id="loginBtn" onclick="doLogin()">Login</button>
-    <div id="errMsg" class="err"></div>
-  </div>
-</div>
-<div id="adminWrap" class="admin-wrap">
-  <div class="admin-header">
-    <h2><span style="font-size:28px">📊</span> IP Access Dashboard</h2>
-    <div class="header-btns">
-      <button class="btn" onclick="loadData()">🔄 Refresh</button>
-      <button class="btn" onclick="doExport()">📥 CSV</button>
-      <button class="btn btn-danger" onclick="doLogout()">🚪 Logout</button>
+<div class="login-wrap" id="loginPage">
+    <div class="login-box">
+        <h2>🔒 管理后台</h2>
+        <p>IP位置检测工具 · 管理员登录</p>
+        <input type="password" id="pwdInput" placeholder="请输入管理员密码" onkeydown="if(event.key==='Enter')doLogin()">
+        <button onclick="doLogin()">登 录</button>
+        <div class="login-error" id="loginError">密码错误，请重试</div>
     </div>
-  </div>
-  <div class="rt-bar"><span class="rt-dot"></span><span id="rtText">Loading...</span></div>
-  <div id="statsRow" class="stats-row"></div>
-  <div class="chart-sec">
-    <h3>🌍 Top Countries</h3>
-    <div id="chartBars"></div>
-  </div>
-  <div class="filters">
-    <input id="searchBox" placeholder="Search IP / city / ISP..." oninput="doFilter()" style="flex:1;min-width:200px">
-    <select id="countrySel" onchange="doFilter()"><option value="">All Countries</option></select>
-    <label class="proxy-toggle"><input type="checkbox" id="proxyFilter" onchange="doFilter()"> VPN/Proxy Only</label>
-  </div>
-  <table class="tbl">
-    <thead><tr><th>#</th><th>IP</th><th>Country</th><th>City</th><th>ISP</th><th>Flags</th><th>Time</th><th>Action</th></tr></thead>
-    <tbody id="tbody"></tbody>
-  </table>
-  <div id="pager" class="pager"></div>
-  <div class="ver" id="verLabel"></div>
 </div>
-<div id="detailModal" class="modal-bg" onclick="if(event.target===this)this.style.display='none'">
-  <div class="modal"><h3>🔍 <span id="detailTitle"></span></h3><div id="detailBody"></div>
-  <button class="modal-close" onclick="document.getElementById('detailModal').style.display='none'">Close</button></div>
+<div class="admin-wrap" id="adminPanel" style="display:none">
+    <div class="admin-header">
+        <h1>📊 访问记录 <span class="live-dot"></span></h1>
+        <div class="actions">
+            <button class="admin-btn btn-export" onclick="exportCSV()">📥 CSV</button>
+            <button class="admin-btn btn-refresh" onclick="loadData()">🔄</button>
+            <button class="admin-btn btn-danger" onclick="showConfirm()">🗑️</button>
+            <button class="admin-btn btn-logout" onclick="doLogout()">🚪</button>
+        </div>
+    </div>
+    <div class="stats-grid" id="statsGrid">
+        <div class="stat-card"><div class="stat-value" id="sTotal">-</div><div class="stat-label">总访问</div></div>
+        <div class="stat-card"><div class="stat-value" id="sToday">-</div><div class="stat-label">今日</div></div>
+        <div class="stat-card"><div class="stat-value" id="sUnique">-</div><div class="stat-label">独立IP</div></div>
+        <div class="stat-card"><div class="stat-value" id="sCountries">-</div><div class="stat-label">国家</div></div>
+        <div class="stat-card"><div class="stat-value" id="sRecent">-</div><div class="stat-label">近1小时</div></div>
+        <div class="stat-card"><div class="stat-value" id="sTopISP">-</div><div class="stat-label">TOP ISP</div></div>
+    </div>
+    <div class="viz-grid">
+        <div class="viz-card"><h3>🗺️ 访问者位置</h3><div id="adminMap"></div></div>
+        <div class="viz-card"><h3>📈 7天趋势</h3><canvas id="trendChart"></canvas></div>
+    </div>
+    <div class="viz-grid">
+        <div class="viz-card"><h3>🌍 国家 TOP5</h3><canvas id="countryChart"></canvas></div>
+        <div class="viz-card"><h3>🌐 ISP TOP5</h3><canvas id="ispChart"></canvas></div>
+    </div>
+    <div class="toolbar">
+        <input type="text" id="searchInput" placeholder="🔍 搜索IP/城市/ISP..." oninput="filterData()">
+        <select id="countryFilter" onchange="filterData()"><option value="">全部国家</option></select>
+        <select id="ispFilter" onchange="filterData()"><option value="">全部ISP</option></select>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead><tr>
+                <th>#</th><th>IP地址</th><th>🏳️</th><th>国家</th><th>城市</th>
+                <th>ISP</th><th>浏览器</th><th>时间</th><th>操作</th>
+            </tr></thead>
+            <tbody id="tableBody"></tbody>
+        </table>
+    </div>
+    <div class="pagination" id="pagination"></div>
 </div>
-<div id="loadingOverlay" class="loading-overlay">⏳ Waking up server...</div>
-<script>var ALL=[],FILT=[],PG=1,PS=30,BUSY=false,VER="10.0.1",RETRY=0;
-function ck(n){try{var m=document.cookie.match(new RegExp("(^| )"+n+"=([^;]+)"));return m?m[2]:"";}catch(e){return "";}}
-function sk(n,v){document.cookie=n+"="+v+";path=/;max-age=86400;SameSite=Lax";}
-function dk(n){document.cookie=n+"=;path=/;max-age=0;SameSite=Lax";}
-function fl(cc){if(!cc||cc.length!==2)return "";try{return String.fromCodePoint(cc.charCodeAt(0)+127397)+String.fromCodePoint(cc.charCodeAt(1)+127397);}catch(e){return "";}}
+<div class="modal-overlay" id="detailModal" style="display:none" onclick="if(event.target===this)closeDetail()">
+    <div class="modal-box">
+        <button class="modal-close" onclick="closeDetail()">×</button>
+        <h3 id="detailTitle">IP 详情</h3>
+        <div class="modal-info" id="detailInfo"></div>
+        <div class="modal-map" id="detailMap"></div>
+    </div>
+</div>
+<div class="confirm-modal" id="confirmModal" style="display:none" onclick="if(event.target===this)closeConfirm()">
+    <div class="confirm-box">
+        <h3>⚠️ 确认清空</h3>
+        <p>此操作将删除所有访问记录，不可恢复！</p>
+        <div class="btns">
+            <button style="background:var(--bg-card);color:var(--text-primary)" onclick="closeConfirm()">取消</button>
+            <button style="background:var(--danger);color:white" onclick="doClear()">确认清空</button>
+        </div>
+    </div>
+</div>
+<div class="confirm-modal" id="delConfirmModal" style="display:none" onclick="if(event.target===this)closeDelConfirm()">
+    <div class="confirm-box">
+        <h3>⚠️ 确认删除</h3>
+        <p id="delConfirmText">确认删除这条记录？</p>
+        <div class="btns">
+            <button style="background:var(--bg-card);color:var(--text-primary)" onclick="closeDelConfirm()">取消</button>
+            <button style="background:var(--danger);color:white" onclick="doDelete()">确认删除</button>
+        </div>
+    </div>
+</div>
+<script>
+var allData=[], filteredData=[], currentPage=1, pageSize=30, cookieName='ip_detect_admin';
+var adminMap=null, mapMarkers=[], trendChart=null, countryChart=null, ispChart=null, refreshTimer=null;
+var pendingDeleteIndex = -1;
+
+function getCookie(n){var m=document.cookie.match(new RegExp('(^| )'+n+'=([^;]+)'));return m?m[2]:'';}
+function setCookie(n,v){document.cookie=n+'='+v+'; path=/; max-age=86400';}
+function delCookie(n){document.cookie=n+'=; path=/; max-age=0';}
+(function(){var t=getCookie(cookieName);if(t)showAdmin();})();
+
 function doLogin(){
-  var p=document.getElementById("pwdInput"),e=document.getElementById("errMsg"),b=document.getElementById("loginBtn");
-  if(!p||!e||!b)return;
-  var pw=p.value.trim();
-  if(!pw){e.textContent="Please enter password";e.style.display="block";return;}
-  e.style.display="none";b.disabled=true;b.textContent="Logging in...";
-  fetch("/api/admin/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:pw})})
-  .then(function(r){return r.json();})
-  .then(function(d){
-    b.disabled=false;b.textContent="Login";
-    if(d.token){sk("ip_detect_admin",d.token);enterAdmin();}
-    else{e.textContent=d.message||"Login failed";e.style.display="block";}
-  })
-  .catch(function(x){b.disabled=false;b.textContent="Login";e.textContent="Error: "+x.message;e.style.display="block";});
+    var pwd=document.getElementById('pwdInput').value;
+    fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pwd})})
+    .then(function(r){if(r.ok)return r.json();throw new Error();})
+    .then(function(d){setCookie(cookieName,d.token);showAdmin();})
+    .catch(function(){document.getElementById('loginError').style.display='block';setTimeout(function(){document.getElementById('loginError').style.display='none';},3000);});
 }
-function doLogout(){dk("ip_detect_admin");location.reload();}
-function enterAdmin(){
-  var lw=document.getElementById("loginWrap"),aw=document.getElementById("adminWrap");
-  if(lw)lw.style.display="none";if(aw)aw.style.display="block";
-  var ve=document.getElementById("verLabel");if(ve)ve.textContent="v"+VER;
-  loadData();setInterval(loadData,30000);
-}
+function doLogout(){delCookie(cookieName);document.getElementById('adminPanel').style.display='none';document.getElementById('loginPage').style.display='flex';if(refreshTimer)clearInterval(refreshTimer);}
+
+function showAdmin(){document.getElementById('loginPage').style.display='none';document.getElementById('adminPanel').style.display='block';initMap();loadData();if(refreshTimer)clearInterval(refreshTimer);refreshTimer=setInterval(loadData,30000);}
+
+function initMap(){if(adminMap)return;adminMap=L.map('adminMap',{zoomControl:true}).setView([30,110],2);L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'©OSM ©CARTO',maxZoom:18}).addTo(adminMap);}
+
 function loadData(){
-  var t=ck("ip_detect_admin");if(!t){doLogout();return;}if(BUSY)return;BUSY=true;
-  fetch("/api/admin/visits",{headers:{"Authorization":"Bearer "+t}})
-  .then(function(r){
-    if(r.status===401){dk("ip_detect_admin");doLogout();return null;}
-    if(!r.ok){BUSY=false;return null;}
-    return r.json();
-  })
-  .then(function(d){BUSY=false;RETRY=0;if(!d)return;ALL=(d.visits||[]).slice().reverse();doFilter();renderStats();renderRT();renderChart();})
-  .catch(function(){
-    BUSY=false;RETRY++;
-    if(RETRY<=3){setTimeout(loadData,3000*RETRY);}
-  });
+    var token=getCookie(cookieName);
+    fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+token}})
+    .then(function(r){if(r.status===401){doLogout();return null;}return r.json();})
+    .then(function(d){if(!d)return;allData=d.visits||[];allData.reverse();buildFilters();filterData();updateStats();updateMap();updateCharts();});
 }
-function renderRT(){
-  var now=Date.now(),h1=0,m5=0;
-  for(var i=0;i<ALL.length;i++){if(ALL[i].time){var df=now-new Date(ALL[i].time).getTime();if(df<3600000)h1++;if(df<300000)m5++;}}
-  var el=document.getElementById("rtText");var last=ALL[0];
-  if(el)el.textContent="1h: "+h1+" | 5m: "+m5+(last?" | Last: "+fl(last.country_code)+" "+last.ip+" "+(last.city||""):"");
+
+function updateStats(){
+    document.getElementById('sTotal').textContent=allData.length;
+    var today=new Date().toISOString().slice(0,10);
+    var todayCount=allData.filter(function(v){return v.time&&v.time.startsWith(today)}).length;
+    document.getElementById('sToday').textContent=todayCount;
+    var ips={},countries={},isps={},now=Date.now(),recent1h=0;
+    allData.forEach(function(v){ips[v.ip]=(ips[v.ip]||0)+1;if(v.country_code)countries[v.country_code]=1;if(v.isp&&v.isp!=='未知')isps[v.isp]=(isps[v.isp]||0)+1;if(v.time){var t=new Date(v.time.replace(/-/g,'/')).getTime();if(now-t<3600000)recent1h++;}});
+    document.getElementById('sUnique').textContent=Object.keys(ips).length;
+    document.getElementById('sCountries').textContent=Object.keys(countries).length;
+    document.getElementById('sRecent').textContent=recent1h;
+    var topISP=Object.entries(isps).sort(function(a,b){return b[1]-a[1]})[0];
+    document.getElementById('sTopISP').textContent=topISP?(topISP[0].length>12?topISP[0].substring(0,11)+'..':topISP[0]):'-';
 }
-function renderStats(){
-  var el=document.getElementById("statsRow");if(!el)return;
-  var total=ALL.length,today=new Date().toISOString().slice(0,10),td=0;
-  for(var i=0;i<ALL.length;i++){if(ALL[i].time&&ALL[i].time.startsWith(today))td++;}
-  var uniq=new Set(ALL.map(function(v){return v.ip})).size;
-  var cn=new Set(ALL.map(function(v){return v.country}).filter(function(c){return c&&c!=="Unknown"&&c!==""})).size;
-  var proxys=ALL.filter(function(v){return v.is_proxy||v.is_hosting}).length;
-  el.innerHTML='<div class="stat"><div class="num">'+total+'</div><div class="lbl">Total</div></div><div class="stat"><div class="num">'+td+'</div><div class="lbl">Today</div></div><div class="stat"><div class="num">'+uniq+'</div><div class="lbl">Unique IPs</div></div><div class="stat"><div class="num">'+cn+'</div><div class="lbl">Countries</div></div><div class="stat"><div class="num" style="background:linear-gradient(135deg,#ff5252,#ff9800);-webkit-background-clip:text;-webkit-text-fill-color:transparent">'+proxys+'</div><div class="lbl">Proxies</div></div>';
+
+function buildFilters(){
+    var cs={},isps={};
+    allData.forEach(function(v){if(v.country)cs[v.country]=v.country_code||'';if(v.isp&&v.isp!=='未知')isps[v.isp]=1;});
+    var cSel=document.getElementById('countryFilter');cSel.innerHTML='<option value="">全部国家</option>';
+    Object.keys(cs).sort().forEach(function(c){var o=document.createElement('option');o.value=cs[c];o.textContent=c;cSel.appendChild(o);});
+    var iSel=document.getElementById('ispFilter');iSel.innerHTML='<option value="">全部ISP</option>';
+    Object.keys(isps).sort().forEach(function(i){var o=document.createElement('option');o.value=i;o.textContent=i;iSel.appendChild(o);});
 }
-function renderChart(){
-  var el=document.getElementById("chartBars");if(!el)return;
-  var cs={};ALL.forEach(function(v){var c=v.country||"Unknown";cs[c]=(cs[c]||0)+1;});
-  var sorted=Object.entries(cs).sort(function(a,b){return b[1]-a[1];}).slice(0,8);
-  var maxC=sorted.length?sorted[0][1]:1;
-  el.innerHTML=sorted.map(function(e){var pct=Math.round(e[1]/maxC*100);var f=ALL.find(function(v){return v.country===e[0];});return '<div class="bar-row"><span class="bar-label">'+fl(f?f.country_code:"")+" "+e[0]+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%"></div></div><span class="bar-val">'+e[1]+'</span></div>';}).join("");
+
+function codeToFlag(code){if(!code||code.length!==2)return '🏁';var offset=127397;return String.fromCodePoint(code.charCodeAt(0)+offset)+String.fromCodePoint(code.charCodeAt(1)+offset);}
+
+function filterData(){
+    var q=document.getElementById('searchInput').value.toLowerCase();
+    var cc=document.getElementById('countryFilter').value;
+    var isp=document.getElementById('ispFilter').value;
+    filteredData=allData.filter(function(v){
+        var matchQ=!q||(v.ip&&v.ip.toLowerCase().indexOf(q)>-1)||(v.city&&v.city.toLowerCase().indexOf(q)>-1)||(v.isp&&v.isp.toLowerCase().indexOf(q)>-1)||(v.country&&v.country.toLowerCase().indexOf(q)>-1);
+        return matchQ&&(!cc||v.country_code===cc)&&(!isp||v.isp===isp);
+    });
+    currentPage=1;renderTable();
 }
-function doFilter(){
-  var q=(document.getElementById("searchBox")||{}).value||"",qL=q.toLowerCase();
-  var cc=(document.getElementById("countrySel")||{}).value||"";
-  var proxyOnly=(document.getElementById("proxyFilter")||{}).checked;
-  FILT=ALL.filter(function(v){
-    if(cc&&v.country!==cc)return false;
-    if(proxyOnly&&!v.is_proxy&&!v.is_hosting)return false;
-    if(qL){var h=(v.ip||"")+(v.city||"")+(v.country||"")+(v.isp||"")+(v.org||"");if(h.toLowerCase().indexOf(qL)<0)return false;}
-    return true;
-  });
-  PG=1;renderTable();buildCountries();
-}
-function buildCountries(){
-  var cs={};ALL.forEach(function(v){if(v.country)cs[v.country]=1;});
-  var el=document.getElementById("countrySel");if(!el)return;var cur=el.value;
-  el.innerHTML='<option value="">All Countries</option>';
-  Object.keys(cs).sort().forEach(function(c){var f=ALL.find(function(v){return v.country===c});var opt=document.createElement("option");opt.value=c;opt.textContent=fl(f?f.country_code:"")+" "+c;el.appendChild(opt);});
-  el.value=cur;
-}
+
 function renderTable(){
-  var tb=document.getElementById("tbody");if(!tb)return;
-  var total=FILT.length,pages=Math.ceil(total/PS)||1;if(PG>pages)PG=pages;
-  var s=(PG-1)*PS,data=FILT.slice(s,s+PS);
-  tb.innerHTML=data.map(function(v,i){
-    var badges="";
-    if(v.is_proxy||v.is_hosting)badges+='<span class="badge badge-proxy">VPN</span>';
-    if(v.is_mobile)badges+='<span class="badge badge-mobile">Mobile</span>';
-    return '<tr><td>'+(s+i+1)+'</td><td class="ip-cell">'+v.ip+'</td><td>'+fl(v.country_code)+" "+(v.country||"")+'</td><td>'+(v.city||"-")+'</td><td style="font-size:12px">'+(v.isp||"-").substring(0,18)+'</td><td>'+badges+'</td><td style="font-size:11px">'+(v.time?new Date(v.time).toLocaleString():"-")+'</td><td><button class="btn-sm" onclick="showDetail('+(s+i)+')">Detail</button> <button class="btn-sm btn-rm" onclick="delVisit('+i+')">Del</button></td></tr>';
-  }).join("");
-  var pg=document.getElementById("pager");if(!pg)return;
-  var h='<button onclick="goPg('+(PG-1)+')" '+(PG===1?"disabled":"")+'>Prev</button>';
-  for(var p=Math.max(1,PG-3),ep=Math.min(pages,PG+3);p<=ep;p++){h+='<button class="'+(p===PG?"on":"")+'" onclick="goPg('+p+')">'+p+'</button>';}
-  h+='<button onclick="goPg('+(PG+1)+')" '+(PG===pages?"disabled":"")+'>Next</button>';
-  pg.innerHTML=h;
+    var tbody=document.getElementById('tableBody');
+    var total=filteredData.length;
+    var totalPages=Math.ceil(total/pageSize)||1;
+    if(currentPage>totalPages)currentPage=totalPages;
+    var start=(currentPage-1)*pageSize;
+    var end=Math.min(start+pageSize,total);
+    var pageData=filteredData.slice(start,end);
+    if(pageData.length===0){tbody.innerHTML='<tr><td colspan="9"><div class="empty"><div class="emoji">📭</div>暂无记录</div></td></tr>';}
+    else{
+        var html='';
+        pageData.forEach(function(v,i){
+            var idx=start+i+1;
+            var ua=v.user_agent||'-';
+            var shortUa=ua.length>35?(ua.indexOf('Chrome')>-1&&ua.indexOf('Edg')>-1?'Edge':ua.indexOf('Chrome')>-1?'Chrome':ua.indexOf('Firefox')>-1?'Firefox':ua.indexOf('Safari')>-1?'Safari':ua.substring(0,32)+'..'):ua;
+            html+='<tr>';
+            html+='<td>'+idx+'</td>';
+            html+='<td class="ip-cell" onclick="showDetail(\\''+v.ip+'\\')">'+v.ip+'</td>';
+            html+='<td class="flag-cell">'+codeToFlag(v.country_code)+'</td>';
+            html+='<td>'+(v.country||'-')+'</td>';
+            html+='<td>'+(v.city||'-')+(v.region&&v.region!=='未知'?'<br><span style="font-size:10px;color:var(--text-muted)">'+v.region+'</span>':'')+'</td>';
+            html+='<td style="font-size:11px">'+(v.isp||'-')+'</td>';
+            html+='<td class="ua-cell" title="'+ua.replace(/"/g,'&quot;')+'">'+shortUa+'</td>';
+            html+='<td class="time-cell">'+(v.time||'-')+'</td>';
+            html+='<td><a class="map-link" href="https://www.google.com/maps?q='+(v.latitude||0)+','+(v.longitude||0)+'" target="_blank">📍</a> <span class="detail-link" onclick="showDetail(\\''+v.ip+'\\')">详情</span><span class="del-link" onclick="showDelConfirm('+i+')">✕</span></td>';
+            html+='</tr>';
+        });
+        tbody.innerHTML=html;
+    }
+    var pagDiv=document.getElementById('pagination');
+    if(totalPages<=1){pagDiv.innerHTML='<span>共 '+total+' 条</span>';return;}
+    var phtml='<button onclick="goPage('+(currentPage-1)+')" '+(currentPage===1?'disabled':'')+'>上一页</button>';
+    var startP=Math.max(1,currentPage-4),endP=Math.min(totalPages,currentPage+4);
+    for(var p=startP;p<=endP;p++)phtml+='<button class="'+(p===currentPage?'active':'')+'" onclick="goPage('+p+')">'+p+'</button>';
+    phtml+='<button onclick="goPage('+(currentPage+1)+')" '+(currentPage===totalPages?'disabled':'')+'>下一页</button>';
+    phtml+='<span style="margin-left:10px">'+total+'条 / '+totalPages+'页</span>';
+    pagDiv.innerHTML=phtml;
 }
-function goPg(p){PG=p;renderTable();}
-function showDetail(idx){
-  var v=FILT[idx];if(!v)return;
-  var t=document.getElementById("detailTitle"),b=document.getElementById("detailBody");
-  if(t)t.textContent=v.ip;
-  if(b)b.innerHTML='<div class="dg"><div class="di"><span class="dl">Country</span><span class="dv">'+fl(v.country_code)+" "+(v.country||"-")+'</span></div><div class="di"><span class="dl">City</span><span class="dv">'+(v.city||"-")+'</span></div><div class="di"><span class="dl">Region</span><span class="dv">'+(v.region||"-")+'</span></div><div class="di"><span class="dl">ISP</span><span class="dv">'+(v.isp||"-")+'</span></div><div class="di"><span class="dl">Org</span><span class="dv">'+(v.org||"-")+'</span></div><div class="di"><span class="dl">AS</span><span class="dv">'+(v.as||"-")+'</span></div><div class="di"><span class="dl">Zip</span><span class="dv">'+(v.zip||"-")+'</span></div><div class="di"><span class="dl">Coords</span><span class="dv">'+(v.latitude||0)+', '+(v.longitude||0)+'</span></div><div class="di"><span class="dl">Proxy</span><span class="dv">'+(v.is_proxy?"Yes":"No")+'</span></div><div class="di"><span class="dl">Mobile</span><span class="dv">'+(v.is_mobile?"Yes":"No")+'</span></div><div class="di"><span class="dl">Time</span><span class="dv">'+(v.time?new Date(v.time).toLocaleString():"-")+'</span></div></div>';
-  document.getElementById("detailModal").style.display="flex";
+
+function goPage(p){var totalPages=Math.ceil(filteredData.length/pageSize)||1;if(p<1||p>totalPages)return;currentPage=p;renderTable();}
+
+function showDetail(ip){
+    var v=allData.find(function(x){return x.ip===ip;});
+    if(!v){alert('未找到记录');return;}
+    document.getElementById('detailTitle').textContent='🌍 '+ip+' 详情';
+    var html='',fields=[['IP地址',v.ip],['国家',(v.country||'-')+' '+codeToFlag(v.country_code)],['城市',v.city||'-'],['地区',v.region||'-'],['经纬度',(v.latitude||'')+', '+(v.longitude||'')],['时区',v.timezone||'-'],['ISP',v.isp||'-'],['AS编号',v.as||'-'],['邮编',v.zip||'-'],['访问时间',v.time||'-']];
+    fields.forEach(function(f){html+='<div class="modal-row"><div class="label">'+f[0]+'</div><div class="value">'+f[1]+'</div></div>';});
+    document.getElementById('detailInfo').innerHTML=html;
+    var lat=v.latitude||0,lon=v.longitude||0;
+    var mapUrl='https://www.openstreetmap.org/export/embed.html?bbox='+(lon-0.05)+','+(lat-0.05)+','+(lon+0.05)+','+(lat+0.05)+'&layer=mapnik&marker='+lat+','+lon;
+    document.getElementById('detailMap').innerHTML='<iframe src="'+mapUrl+'" loading="lazy"></iframe>';
+    document.getElementById('detailModal').style.display='flex';
 }
-function delVisit(idx){
-  var v=FILT[idx];if(!v)return;
-  if(!confirm("Delete "+v.ip+"?"))return;
-  var t=ck("ip_detect_admin");
-  fetch("/api/admin/visits",{method:"DELETE",headers:{"Authorization":"Bearer "+t,"Content-Type":"application/json"},body:JSON.stringify({ip:v.ip})})
-  .then(function(r){return r.json();})
-  .then(function(d){if(d.deleted||d.ok||d.message){loadData();}else{alert("Failed: "+(d.message||"unknown"));}})
-  .catch(function(x){alert("Error: "+x.message);});
+function closeDetail(){document.getElementById('detailModal').style.display='none';}
+
+function showDelConfirm(idx){pendingDeleteIndex=idx;var v=filteredData[idx];document.getElementById('delConfirmText').textContent='确认删除 '+v.ip+' 的记录？';document.getElementById('delConfirmModal').style.display='flex';}
+function closeDelConfirm(){document.getElementById('delConfirmModal').style.display='none';pendingDeleteIndex=-1;}
+function doDelete(){
+    if(pendingDeleteIndex<0)return;
+    var v=filteredData[pendingDeleteIndex];
+    var token=getCookie(cookieName);
+    fetch('/api/admin/visits/'+encodeURIComponent(v.ip),{method:'DELETE',headers:{'Authorization':'Bearer '+token}})
+    .then(function(r){if(r.status===401){doLogout();return;}closeDelConfirm();loadData();});
 }
-function doExport(){
-  if(!ALL.length){alert("No data");return;}
-  var rows=["IP,Country,CountryCode,City,Region,ISP,Org,AS,Zip,Lat,Lon,Proxy,Mobile,Time"];
-  ALL.forEach(function(v){rows.push([v.ip||"",v.country||"",v.country_code||"",v.city||"",v.region||"",v.isp||"",v.org||"",v.as||"",v.zip||"",v.latitude||"",v.longitude||"",v.is_proxy?"Yes":"No",v.is_mobile?"Yes":"No",v.time||""].join(","));});
-  var blob=new Blob([rows.join(String.fromCharCode(10))],{type:"text/csv"});
-  var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="ip-visits-"+new Date().toISOString().slice(0,10)+".csv";a.click();
+
+function updateMap(){
+    if(!adminMap)return;mapMarkers.forEach(function(m){adminMap.removeLayer(m);});mapMarkers=[];
+    var seen={};allData.forEach(function(v){if(seen[v.ip])return;seen[v.ip]=1;var lat=parseFloat(v.latitude),lon=parseFloat(v.longitude);if(isNaN(lat)||isNaN(lon))return;var flag=codeToFlag(v.country_code);var popup='<b>'+flag+' '+(v.city||'未知')+'</b><br>IP: '+v.ip+'<br>ISP: '+(v.isp||'未知')+'<br>'+(v.time||'');var marker=L.circleMarker([lat,lon],{radius:5,fillColor:'#7c4dff',color:'#448aff',weight:1,opacity:0.8,fillOpacity:0.6}).addTo(adminMap).bindPopup(popup);mapMarkers.push(marker);});
+    if(mapMarkers.length>0)adminMap.fitBounds(mapMarkers.map(function(m){return m.getLatLng()}),{padding:[30,30],maxZoom:6});
 }
-if("serviceWorker" in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
-document.getElementById("pwdInput").addEventListener("keydown",function(ev){if(ev.key==="Enter")doLogin();});
-(function(){
-  var t=ck("ip_detect_admin");
-  if(!t)return;
-  var lo=document.getElementById("loadingOverlay");
-  if(lo)lo.classList.add("show");
-  var tries=0;
-  function tryAutoLogin(){
-    fetch("/api/admin/visits",{headers:{"Authorization":"Bearer "+t}})
-    .then(function(r){
-      if(r.ok){if(lo)lo.classList.remove("show");enterAdmin();}
-      else if(r.status===401){dk("ip_detect_admin");if(lo)lo.classList.remove("show");}
-      else{tries++;if(tries<5){setTimeout(tryAutoLogin,3000);}else{if(lo)lo.classList.remove("show");}}
-    })
-    .catch(function(){tries++;if(tries<5){setTimeout(tryAutoLogin,3000);}else{if(lo)lo.classList.remove("show");}});
-  }
-  tryAutoLogin();
-})();</script>
+
+function updateCharts(){
+    var days={};for(var i=6;i>=0;i--){var d=new Date(Date.now()-i*86400000);days[d.toISOString().slice(0,10)]=0;}
+    allData.forEach(function(v){if(v.time){var d=v.time.substring(0,10);if(d in days)days[d]++;}});
+    var labels=Object.keys(days).map(function(d){return d.substring(5);}),values=Object.values(days);
+    var ctx1=document.getElementById('trendChart').getContext('2d');
+    if(trendChart)trendChart.destroy();
+    trendChart=new Chart(ctx1,{type:'line',data:{labels:labels,datasets:[{label:'访问量',data:values,borderColor:'#7c4dff',backgroundColor:'rgba(124,77,255,0.1)',fill:true,tension:0.4,pointBackgroundColor:'#18ffff',pointRadius:4}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#5c6bc0'},grid:{color:'rgba(124,77,255,0.08)'}},y:{ticks:{color:'#5c6bc0',stepSize:1},grid:{color:'rgba(124,77,255,0.08)'},beginAtZero:true}}}});
+    var ccs={};allData.forEach(function(v){if(v.country&&v.country!=='未知')ccs[v.country]=(ccs[v.country]||0)+1;});
+    var cSorted=Object.entries(ccs).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
+    var ctx2=document.getElementById('countryChart').getContext('2d');
+    if(countryChart)countryChart.destroy();
+    countryChart=new Chart(ctx2,{type:'doughnut',data:{labels:cSorted.map(function(x){return x[0]}),datasets:[{data:cSorted.map(function(x){return x[1]}),backgroundColor:['#7c4dff','#448aff','#18ffff','#69f0ae','#ffd740'],borderColor:'#111640',borderWidth:2}]},options:{responsive:true,plugins:{legend:{position:'bottom',labels:{color:'#9fa8da',font:{size:11}}}}}});
+    var isps={};allData.forEach(function(v){if(v.isp&&v.isp!=='未知')isps[v.isp]=(isps[v.isp]||0)+1;});
+    var iSorted=Object.entries(isps).sort(function(a,b){return b[1]-a[1]}).slice(0,5);
+    var ctx3=document.getElementById('ispChart').getContext('2d');
+    if(ispChart)ispChart.destroy();
+    ispChart=new Chart(ctx3,{type:'doughnut',data:{labels:iSorted.map(function(x){return x[0].length>18?x[0].substring(0,16)+'..':x[0]}),datasets:[{data:iSorted.map(function(x){return x[1]}),backgroundColor:['#ff5252','#ff9100','#ffd740','#69f0ae','#18ffff'],borderColor:'#111640',borderWidth:2}]},options:{responsive:true,plugins:{legend:{position:'bottom',labels:{color:'#9fa8da',font:{size:11}}}}}});
+}
+
+function exportCSV(){
+    var token=getCookie(cookieName);
+    fetch('/api/admin/visits',{headers:{'Authorization':'Bearer '+token}})
+    .then(function(r){return r.json();}).then(function(d){
+        var visits=d.visits||[];if(!visits.length){alert('无记录');return;}
+        var csv='\uFEFFIP,国家,国家代码,城市,地区,纬度,经度,时区,ISP,AS,UA,来源,时间\n';
+        visits.forEach(function(v){csv+=[v.ip,v.country,v.country_code,v.city,v.region,v.latitude,v.longitude,v.timezone,v.isp,v.as||'','"'+(v.user_agent||'').replace(/"/g,'""')+'"',v.referer||'',v.time].join(',')+'\n';});
+        var blob=new Blob([csv],{type:'text/csv;charset=utf-8'});var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='ip_visits_'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url);
+    });
+}
+function showConfirm(){document.getElementById('confirmModal').style.display='flex';}
+function closeConfirm(){document.getElementById('confirmModal').style.display='none';}
+function doClear(){var token=getCookie(cookieName);fetch('/api/admin/clear',{method:'POST',headers:{'Authorization':'Bearer '+token}}).then(function(r){if(r.status===401){doLogout();return;}closeConfirm();loadData();});}
+</script>
 </body>
 </html>"""
 
 
-
-# Country code to continent mapping (ip-api doesn't always return continent)
-COUNTRY_CONTINENT = {
-    "CN": "亚洲", "JP": "亚洲", "KR": "亚洲", "IN": "亚洲",
-    "TH": "亚洲", "VN": "亚洲", "PH": "亚洲", "MY": "亚洲",
-    "ID": "亚洲", "SG": "亚洲", "TW": "亚洲", "HK": "亚洲",
-    "US": "北美洲", "CA": "北美洲", "MX": "北美洲",
-    "BR": "南美洲", "AR": "南美洲", "GB": "欧洲",
-    "FR": "欧洲", "DE": "欧洲", "IT": "欧洲", "RU": "欧洲",
-    "AU": "大洋洲", "NZ": "大洋洲", "EG": "非洲",
-    "ZA": "非洲", "SA": "中东", "AE": "中东",
-}
-
 # ========== 路由 ==========
-
-@app.on_event("startup")
-async def startup():
-    try: _load_visits()
-    except Exception: pass
-
 
 @app.get("/", response_class=HTMLResponse)
 async def get_ip_info(request: Request):
     ip = _get_client_ip(request)
     location = await _fetch_location(ip)
-
-    # Fill missing fields with fallbacks
-    if not location.get("continent"):
-        location["continent"] = COUNTRY_CONTINENT.get(str(location.get("country_code", "")).upper(), "未知")
-    if not location.get("zip"):
-        location["zip"] = "未知"
     ua = request.headers.get("user-agent", "")
     referer = request.headers.get("referer", "")
     _record_visit(ip, location, ua, referer)
@@ -1039,16 +1021,6 @@ async def get_ip_info(request: Request):
     except (ValueError, TypeError):
         map_bbox = "112.5,37.8,112.6,37.9"
 
-    is_proxy = location.get("is_proxy", False)
-    is_hosting = location.get("is_hosting", False)
-    is_mobile = location.get("is_mobile", False)
-    if is_proxy or is_hosting:
-        proxy_status = "🚨 检测到代理/VPN/云服务"
-    elif is_mobile:
-        proxy_status = "📱 移动网络"
-    else:
-        proxy_status = "✅ 正常连接"
-
     json_data = {"ip": ip, "location": location or None, "error": None}
     json_str = json.dumps(json_data, ensure_ascii=False, indent=2)
     json_raw = json.dumps(json_data, ensure_ascii=False)
@@ -1057,19 +1029,16 @@ async def get_ip_info(request: Request):
     for old, new in [
         ("__IP__", ip), ("__TIMESTAMP__", timestamp),
         ("__COUNTRY_FLAG__", country_flag),
-        ("__COUNTRY__", (location.get("country") or "未知")),
-        ("__COUNTRY_CODE__", (location.get("country_code") or "未知")),
-        ("__CITY__", (location.get("city") or "未知")),
-        ("__REGION__", (location.get("region_name") or "未知")),
-        ("__REGION_NAME__", (location.get("region_name") or "未知")),
+        ("__COUNTRY__", location.get("country", "未知")),
+        ("__COUNTRY_CODE__", location.get("country_code", "未知")),
+        ("__CITY__", location.get("city", "未知")),
+        ("__REGION__", location.get("region_name", "未知")),
+        ("__REGION_NAME__", location.get("region_name", "未知")),
         ("__LAT__", str(lat)), ("__LON__", str(lon)),
-        ("__TIMEZONE__", (location.get("timezone") or "未知")),
-        ("__ISP__", (location.get("isp") or "未知")),
-        ("__AS__", (location.get("as") or "未知")),
-        ("__ZIP__", (location.get("zip") or "未知")),
-        ("__ORG__", (location.get("org") or "未知")),
-        ("__CONTINENT__", (location.get("continent") or "未知")),
-        ("__PROXY_STATUS__", proxy_status),
+        ("__TIMEZONE__", location.get("timezone", "未知")),
+        ("__ISP__", location.get("isp", "未知")),
+        ("__AS__", location.get("as", "未知")),
+        ("__ZIP__", location.get("zip", "未知")),
         ("__MAP_BBOX__", map_bbox),
         ("__JSON_DATA__", json_str.replace("<", "&lt;").replace(">", "&gt;")),
         ("__JSON_RAW__", json_raw),
@@ -1082,12 +1051,6 @@ async def get_ip_info(request: Request):
 async def get_info_api(request: Request):
     ip = _get_client_ip(request)
     location = await _fetch_location(ip)
-
-    # Fill missing fields with fallbacks
-    if not location.get("continent"):
-        location["continent"] = COUNTRY_CONTINENT.get(str(location.get("country_code", "")).upper(), "未知")
-    if not location.get("zip"):
-        location["zip"] = "未知"
     return {"ip": ip, "location": location or None, "error": None}
 
 
@@ -1103,12 +1066,6 @@ async def query_ip(ip: str = Query(...)):
     except ValueError:
         return {"error": "IP格式错误", "ip": ip, "location": None}
     location = await _fetch_location(ip)
-
-    # Fill missing fields with fallbacks
-    if not location.get("continent"):
-        location["continent"] = COUNTRY_CONTINENT.get(str(location.get("country_code", "")).upper(), "未知")
-    if not location.get("zip"):
-        location["zip"] = "未知"
     if not location:
         return {"error": "查询失败", "ip": ip, "location": None}
     return {"ip": ip, "location": location, "error": None}
@@ -1137,32 +1094,8 @@ async def get_stats():
         "unique_ips": len(ips),
         "unique_countries": len(countries),
         "recent_1h": recent1h,
-        "recent": [v for v in visits if v.get("time") and (now - datetime.strptime(v["time"], "%Y-%m-%d %H:%M:%S")).total_seconds() < 3600][-10:],
     }
 
-
-@app.get("/api/version")
-async def get_version():
-    return {"version": "10.0.0", "name": "IP Detector"}
-
-
-
-
-@app.get("/api/events")
-async def sse_events(request: Request):
-    async def gen():
-        last_count = len(_load_visits())
-        for _ in range(120):
-            await asyncio.sleep(1)
-            current = len(_load_visits())
-            if current > last_count:
-                visits = _load_visits()
-                if visits:
-                    v = visits[-1]
-                    data = json.dumps({"ip": v.get("ip",""), "city": v.get("city",""), "country": v.get("country",""), "country_code": v.get("country_code",""), "time": v.get("time","")}, ensure_ascii=False)
-                    yield f"data: {data}\n\n"
-                last_count = current
-    return StreamingResponse(gen(), media_type="text/event-stream")
 
 @app.get("/health")
 async def health_check():
@@ -1193,7 +1126,7 @@ async def admin_login(request: Request):
     if pwd != ADMIN_PASSWORD:
         raise HTTPException(status_code=401, detail="密码错误")
     token = base64.b64encode(pwd.encode("utf-8")).decode("utf-8")
-    return {"success": True, "token": token, "message": "登录成功"}
+    return {"token": token, "message": "登录成功"}
 
 
 @app.get("/api/admin/visits")
@@ -1225,29 +1158,6 @@ async def admin_clear_visits(request: Request):
     _save_visits([], force=True)
     return {"message": "已清空"}
 
-
-@app.delete("/api/admin/visits")
-async def admin_clear_all_visits(request: Request):
-    if not _verify_admin(request):
-        raise HTTPException(status_code=401, detail="未授权")
-    _save_visits([], force=True)
-    return {"message": "已清空"}
-
-
-
-
-@app.delete("/api/admin/visits/index/{idx}")
-async def admin_delete_by_index(idx: int, request: Request):
-    if not _verify_admin(request):
-        raise HTTPException(status_code=401, detail="未授权")
-    visits = _load_visits()
-    # idx is from the reversed list, convert to actual index
-    actual_idx = len(visits) - 1 - idx
-    if 0 <= actual_idx < len(visits):
-        visits.pop(actual_idx)
-        _save_visits(visits, force=True)
-        return {"message": "已删除"}
-    raise HTTPException(status_code=404, detail="未找到记录")
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page():
